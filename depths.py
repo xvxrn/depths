@@ -25,14 +25,16 @@ COLORS = {
 def init_colors():
     curses.start_color()
     curses.use_default_colors()
+    BG_FLOOR = 236
+    BG_WALL = 234
+    tile_colors = {"wall","floor","door","stairs","secret","player","goblin","orc","troll","dragon",
+        "skeleton","bat","wraith","archer","necromancer","mimic","rat","vampire","golem",
+        "potion","weapon","armor","gold","scroll","food","ring","wand","key","trap","dim"}
     for name, code in COLORS.items():
-        curses.init_pair(hash(name) % 200 + 1, code, -1)
+        bg = BG_WALL if name in ("wall","secret") else (BG_FLOOR if name in tile_colors else -1)
+        curses.init_pair(hash(name) % 200 + 1, code, bg)
     for name in COLORS:
         setattr(Color, name, hash(name) % 200 + 1)
-    # backgrounds for tile colors (fg, bg)
-    curses.init_pair(getattr(Color, "floor"), 250, 236)
-    curses.init_pair(getattr(Color, "wall"), 239, 234)
-    curses.init_pair(getattr(Color, "player"), 46, 236)
 
 class Color: pass
 
@@ -670,20 +672,20 @@ class Game:
                 ch = self.grid[y][x]
                 if (x,y) in self.visible:
                     if ch == "#":
-                        self.stdscr.addstr(y, x, "#", cp("wall"))
+                        self.stdscr.addstr(y, x, " ", cp("wall"))
                     elif ch == ".":
-                        self.stdscr.addstr(y, x, ".", cp("floor"))
+                        self.stdscr.addstr(y, x, " ", cp("floor"))
                     elif ch == ">":
                         self.stdscr.addstr(y, x, ">", cp("stairs"))
                     elif ch in ("+","S"):
                         self.stdscr.addstr(y, x, "+", cp("door"))
                 elif (x,y) in self.explored:
                     if ch == "#":
-                        self.stdscr.addstr(y, x, "#", cp("dim"))
+                        self.stdscr.addstr(y, x, " ", cp("dim"))
                     elif ch == "S":
-                        self.stdscr.addstr(y, x, "#", cp("dim"))
+                        self.stdscr.addstr(y, x, " ", cp("dim"))
                     else:
-                        self.stdscr.addstr(y, x, ".", cp("dim"))
+                        self.stdscr.addstr(y, x, " ", cp("dim"))
         # traps (only revealed if visible and triggered or detected? show if visible)
         for t in self.traps:
             if (t["x"],t["y"]) in self.visible and (t.get("triggered") or t["ch"]=="^"):
