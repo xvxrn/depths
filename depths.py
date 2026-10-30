@@ -841,6 +841,7 @@ def send_kitty(img):
     img.save(buf, format='PNG')
     data = base64.b64encode(buf.getvalue()).decode('ascii')
     # delete previous images
+    sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
     chunk_size = 4096
@@ -867,11 +868,7 @@ def _draw_frame(game):
         from PIL import Image, ImageDraw, ImageFont
     except Exception:
         return
-    cell_w, cell_h = get_cell_size_cached()
-    import shutil
-    ts = shutil.get_terminal_size((80, 24))
-    img_w = ts.columns * cell_w
-    img_h = ts.lines * cell_h
+    img_w, img_h = get_terminal_pixels()
     global TILE
     TILE = max(8, min((img_w - SIDE_W - PAD*2)//MAP_TILES_W, (img_h - PAD*2)//MAP_TILES_H))
     img = Image.new('RGB', (img_w, img_h), RGB["bg"])
@@ -1109,6 +1106,7 @@ def image_to_sixel(img):
 
 def send_sixel(img):
     data = image_to_sixel(img)
+    sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.write(data)
     sys.stdout.flush()
@@ -1123,6 +1121,7 @@ def render_kitty(game):
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     data = base64.b64encode(buf.getvalue()).decode('ascii')
+    sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
     chunk_size = 4096
@@ -1147,6 +1146,35 @@ def render_sixel(game):
     send_sixel(img)
 
 _cell_size_cache = None
+def get_terminal_pixels():
+    """Query terminal text area size in pixels (CSI 14 t)."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        sys.stdout.write("\x1b[14t")
+        sys.stdout.flush()
+        buf = ""
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            r,_,_ = select.select([fd], [], [], 0.1)
+            if not r:
+                if buf: break
+                continue
+            c = os.read(fd, 1).decode('latin1', 'replace')
+            buf += c
+            if c == 't':
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    m = re.search(r'\x1b\[4;(\d+);(\d+)t', buf)
+    if m:
+        return int(m.group(2)), int(m.group(1))
+    cell_w, cell_h = get_cell_size()
+    import shutil
+    ts = shutil.get_terminal_size((80, 24))
+    return ts.columns * cell_w, ts.lines * cell_h
+
 def get_cell_size_cached():
     global _cell_size_cache
     if _cell_size_cache is None:
@@ -1217,6 +1245,7 @@ def main_kitty():
                         return
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?25h")
         # clear
         sys.stdout.write("\x1b_Ga=d,d=A\x1b\\\x1b[2J\x1b[H")
         sys.stdout.flush()
@@ -1272,6 +1301,7 @@ def main_sixel():
                         return
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?25h")
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
 
