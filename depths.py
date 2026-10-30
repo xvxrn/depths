@@ -586,6 +586,7 @@ class Game:
         elif key == ord('x'): self.search()
         elif key == ord('>'): self.move_stairs()
         elif key == ord('S'): self.save_game()
+        elif key == ord('L'): self.load_game()
 
     def move_stairs(self):
         if self.grid[self.player["y"]][self.player["x"]] == 3:
@@ -1000,6 +1001,40 @@ def render_kitty(game):
     sy += 12
     draw.text((sx, sy), "x search  c stats  S save", fill=(139,148,158), font=font_small)
 
+    # inventory overlay
+    if game.inventory_open:
+        bx = (img_w - 420)//2
+        by = (img_h - 320)//2
+        draw.rectangle([bx, by, bx+420, by+320], fill=RGB["panel"])
+        draw.rectangle([bx, by, bx+420, by+2], fill=RGB["title"])
+        draw.text((bx+12, by+8), "INVENTORY", fill=RGB["title"], font=font_big)
+        inv = game.player["inventory"]
+        y = by + 36
+        for l in [f"Weapon: {game.player['weapon']['type'] if game.player['weapon'] else 'none'}",
+                  f"Armor:  {game.player['armor']['type'] if game.player['armor'] else 'none'}",
+                  f"Ring:   {game.player['ring']['type'] if game.player['ring'] else 'none'}",
+                  "", "Items:"]:
+            draw.text((bx+12, y), l, fill=RGB["text"], font=font)
+            y += 16
+        for i, it in enumerate(inv[:14]):
+            mark = ">" if i == game.inv_cursor else " "
+            col = RGB["title"] if i == game.inv_cursor else RGB["text"]
+            draw.text((bx+12, y), f"{mark} {it['name'][:34]}", fill=col, font=font_small)
+            y += 14
+        if not inv:
+            draw.text((bx+12, y), "(empty)", fill=(139,148,158), font=font_small)
+            y += 14
+        draw.text((bx+12, by+300), "Enter=equip/use  d=drop  i/q=close", fill=(139,148,158), font=font_small)
+
+    # game over overlay
+    if game.game_over:
+        draw.rectangle([0, 0, img_w, img_h], fill=(0,0,0))
+        title = "VICTORY!" if game.victory else "GAME OVER"
+        col = RGB["hp"] if game.victory else RGB["trap"]
+        draw.text((img_w//2-60, img_h//2-20), title, fill=col, font=font_big)
+        draw.text((img_w//2-120, img_h//2+10), f"Floor {game.floor}  Level {game.player['level']}  Gold {game.player['gold']}", fill=RGB["text"], font=font)
+        draw.text((img_w//2-100, img_h//2+30), "Auto-restarts in auto mode" if game.auto else "Press r to retry, q to quit", fill=(139,148,158), font=font_small)
+
     send_kitty(img)
 
 _cell_size_cache = None
@@ -1094,7 +1129,7 @@ def title_screen(stdscr):
         "",
         "Move: arrows / WASD / hjkl   Diagonals: yubn",
         "p = potion   f = eat   r = scroll   i = inventory",
-        "c = stats   x = search   > = descend   S = save   A = auto   q = quit",
+        "c = stats   x = search   > = descend   S = save   L = load   A = auto   q = quit",
         "",
         "Reach floor 15 to escape. Bosses every 5 floors.",
         "",
