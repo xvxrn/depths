@@ -1,26 +1,29 @@
 # depths
 
-A terminal roguelike. Procedural dungeons, permadeath, no dependencies beyond curses (stdlib).
+A roguelike in two forms:
 
-## Play
+- **Terminal** (Python, curses): `python3 depths.py` — classic ASCII roguelike.
+- **Pixel** (HTML/Canvas): open `index.html` in a browser — same game with pixel graphics.
+
+## Play (pixel)
+Open `index.html` in any modern browser. No build step, no server.
+
+## Play (terminal)
 ```
-depths
+python3 depths.py
 ```
-or `python3 depths.py`.
 
 ## Controls
 - Move: arrows / WASD / hjkl; diagonals: yubn
 - `p` potion, `f` eat, `r` scroll, `i` inventory, `c` stats
-- `x` search (reveal secret doors), `>` descend, `S` save, `q` quit
+- `x` search, `>` descend, `S` save, `q` quit
 
 ## Features
 - 15 floors, bosses every 5, escape on 15
-- 12 enemy types: goblins, orcs, trolls, dragons, skeletons, bats, wraiths, archers, necromancers, mimics, rats, vampires, golems
-- Equipment (weapon/armor/ring), inventory, wands
-- Traps (spike, poison, teleport, alarm), secret doors
-- Hunger, food, keys, gold
-- Fog of war, procedural rooms and corridors
-- Save/load, high score
+- 12+ enemy types, mimics, ranged enemies, necromancers
+- Equipment, inventory, wands, traps, secret doors
+- Hunger, food, keys, gold, save/load, high score
 
 ## Stack
-Python 3.14, stdlib only (`curses`). Single file.
+- Terminal: Python 3.14, stdlib only (`curses`).
+- Pixel: vanilla HTML/CSS/JS, Canvas API. No dependencies.
