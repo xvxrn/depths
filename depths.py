@@ -195,6 +195,7 @@ class Game:
         self.game_over = False
         self.inventory_open = False
         self.inv_cursor = 0
+        self.auto = False
         self.new_floor()
 
     def new_floor(self):
@@ -565,6 +566,10 @@ class Game:
             return
         if key in (ord('q'), 27):
             return "quit"
+        if key == ord('A'):
+            self.auto = not self.auto
+            self.msg("Auto-pilot: " + ("ON" if self.auto else "OFF"))
+            return
         if key in (curses.KEY_UP, ord('k'), ord('w')): self.move_player(0,-1)
         elif key in (curses.KEY_DOWN, ord('j'), ord('s')): self.move_player(0,1)
         elif key in (curses.KEY_LEFT, ord('h'), ord('a')): self.move_player(-1,0)
@@ -607,6 +612,97 @@ class Game:
             self.msg("Game saved.")
         except Exception as e:
             self.msg(f"Save failed: {e}")
+
+    def bfs_next(self, start, goal):
+        from collections import deque
+        if start == goal:
+            return None
+        def walkable(x, y):
+            if not (0 <= x < self.mw and 0 <= y < self.mh):
+                return False
+            if self.grid[y][x] in (0, 4):
+                return False
+            if (x, y) != goal and any(e["hp"] > 0 and e["x"] == x and e["y"] == y for e in self.entities):
+                return False
+            return True
+        q = deque([start])
+        prev = {start: None}
+        while q:
+            x, y = q.popleft()
+            if (x, y) == goal:
+                break
+            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                nx, ny = x+dx, y+dy
+                if (nx, ny) not in prev and walkable(nx, ny):
+                    prev[(nx, ny)] = (x, y)
+                    q.append((nx, ny))
+        if goal not in prev:
+            return None
+        cur = goal
+        path = []
+        while cur is not None and cur != start:
+            path.append(cur)
+            cur = prev[cur]
+        if not path:
+            return None
+        path.reverse()
+        return path[0]
+
+    def auto_step(self):
+        if self.game_over:
+            return
+        if self.inventory_open:
+            self.close_inventory()
+            return
+        # heal
+        if self.player["hp"] < self.player["maxhp"] * 0.35 and self.player["potions"] > 0:
+            self.use_potion(); return
+        if self.player["hunger"] > 60 and self.player["food"] > 0:
+            self.eat_food(); return
+        # adjacent enemy -> attack
+        for e in self.entities:
+            if e["hp"] > 0 and abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]) == 1:
+                self.move_player(e["x"]-self.player["x"], e["y"]-self.player["y"])
+                return
+        # choose target
+        target = None
+        enemies = [e for e in self.entities if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
+        if enemies:
+            enemies.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
+            target = (enemies[0]["x"], enemies[0]["y"])
+        else:
+            vis_items = [it for it in self.items if (it["x"], it["y"]) in self.visible]
+            if vis_items:
+                vis_items.sort(key=lambda it: abs(it["x"]-self.player["x"]) + abs(it["y"]-self.player["y"]))
+                target = (vis_items[0]["x"], vis_items[0]["y"])
+            else:
+                for y in range(self.mh):
+                    for x in range(self.mw):
+                        if self.grid[y][x] == 3:
+                            target = (x, y)
+                if target is None:
+                    # nearest unexplored floor tile
+                    best = None; bestd = 10**9
+                    for y in range(self.mh):
+                        for x in range(self.mw):
+                            if (x, y) not in self.explored and self.grid[y][x] in (1, 2):
+                                d = abs(x-self.player["x"]) + abs(y-self.player["y"])
+                                if d < bestd:
+                                    bestd = d; best = (x, y)
+                    target = best
+        if target is None:
+            return
+        if (self.player["x"], self.player["y"]) == target and self.grid[self.player["y"]][self.player["x"]] == 3:
+            self.move_stairs(); return
+        step = self.bfs_next((self.player["x"], self.player["y"]), target)
+        if step:
+            self.move_player(step[0]-self.player["x"], step[1]-self.player["y"])
+            return
+        # fallback random
+        for dx, dy in [(0,-1),(0,1),(-1,0),(1,0)]:
+            nx, ny = self.player["x"]+dx, self.player["y"]+dy
+            if 0 <= nx < self.mw and 0 <= ny < self.mh and self.grid[ny][nx] in (1,2,3) and not any(e["x"]==nx and e["y"]==ny and e["hp"]>0 for e in self.entities):
+                self.move_player(dx, dy); return
 
     def draw(self):
         if self.stdscr is None:
@@ -938,19 +1034,43 @@ def main_kitty():
     tty.setcbreak(fd)
     try:
         game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-        game.game_over = False
-        while not game.game_over:
+        if "--auto" in sys.argv:
+            game.auto = True
+        while True:
+            game.game_over = False
+            while not game.game_over:
+                game.draw()
+                r,_,_ = select.select([fd], [], [], 0.12 if game.auto else None)
+                if r:
+                    key = read_key(fd)
+                    if key == ord('A'):
+                        game.auto = not game.auto
+                        game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
+                        continue
+                    if key in (ord('q'), 27):
+                        return
+                    res = game.handle_input(key)
+                    if res == "quit":
+                        return
+                elif game.auto:
+                    game.auto_step()
             game.draw()
-            key = read_key(fd)
-            if key == ord('q') or key == 27:
-                break
-            res = game.handle_input(key)
-            if res == "quit":
-                break
-        if game.game_over:
-            # show game over by rendering final frame + message
-            game.draw()
-            time.sleep(2)
+            if game.auto:
+                time.sleep(2)
+                game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+                game.auto = True
+                continue
+            # wait for r/q
+            while True:
+                rr,_,_ = select.select([fd], [], [], None)
+                if rr:
+                    k = read_key(fd)
+                    if k == ord('r'):
+                        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+                        game.auto = False
+                        break
+                    if k in (ord('q'), 27):
+                        return
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         # clear
@@ -974,7 +1094,7 @@ def title_screen(stdscr):
         "",
         "Move: arrows / WASD / hjkl   Diagonals: yubn",
         "p = potion   f = eat   r = scroll   i = inventory",
-        "c = stats   x = search   > = descend   S = save   q = quit",
+        "c = stats   x = search   > = descend   S = save   A = auto   q = quit",
         "",
         "Reach floor 15 to escape. Bosses every 5 floors.",
         "",
@@ -1013,18 +1133,35 @@ def main(stdscr):
     stdscr.keypad(True)
     init_colors()
     title_screen(stdscr)
+    stdscr.timeout(100)
     while True:
         game = Game(stdscr=stdscr)
+        if "--auto" in sys.argv:
+            game.auto = True
         game.game_over = False
         while not game.game_over:
             game.draw()
             key = stdscr.getch()
-            res = game.handle_input(key)
-            if res == "quit":
-                return
+            if key != -1:
+                if key == ord('A'):
+                    game.auto = not game.auto
+                    game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
+                    continue
+                res = game.handle_input(key)
+                if res == "quit":
+                    stdscr.timeout(-1)
+                    return
+            elif game.auto:
+                game.auto_step()
+                time.sleep(0.12)
+        stdscr.timeout(-1)
         action = game_over_screen(stdscr, game)
+        stdscr.timeout(100)
         if action == "quit":
+            stdscr.timeout(-1)
             return
+        if game.auto:
+            continue
 
 if __name__ == "__main__":
     if os.environ.get("KITTY_WINDOW_ID"):
