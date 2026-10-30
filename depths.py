@@ -1047,15 +1047,15 @@ def send_kitty(img):
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
     # display scaled to full terminal grid (c cols, r rows) -> no scroll
-    hdr = "\x1b_Ga=T,f=100,c=%d,r=%d" % (ts.columns, ts.lines)
+    hdr = "\x1b_Ga=T,f=100,C=1,c=%d,r=%d" % (ts.columns, ts.lines)
     chunk_size = 4096
     chunks = [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
     if not chunks:
         sys.stdout.flush(); return
     if len(chunks) == 1:
-        sys.stdout.write(f"\x1b_Ga=T,f=100;{chunks[0]}\x1b\\")
+        sys.stdout.write(f"\x1b_Ga=T,f=100,C=1;{chunks[0]}\x1b\\")
     else:
-        sys.stdout.write(f"\x1b_Ga=T,f=100,m=1;{chunks[0]}\x1b\\")
+        sys.stdout.write(f"\x1b_Ga=T,f=100,C=1,m=1;{chunks[0]}\x1b\\")
         for ch in chunks[1:-1]:
             sys.stdout.write(f"\x1b_Gm=1;{ch}\x1b\\")
         sys.stdout.write(f"\x1b_Gm=0;{chunks[-1]}\x1b\\")
@@ -1398,7 +1398,7 @@ def render_kitty(game):
     sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
-    hdr = "\x1b_Ga=T,f=100,c=%d,r=%d" % (ts.columns, ts.lines)
+    hdr = "\x1b_Ga=T,f=100,C=1,c=%d,r=%d" % (ts.columns, ts.lines)
     chunk_size = 4096
     chunks = [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
     if not chunks:
@@ -1410,6 +1410,9 @@ def render_kitty(game):
         for ch in chunks[1:-1]:
             sys.stdout.write("\x1b_Gm=1;%s\x1b\\" % ch)
         sys.stdout.write("\x1b_Gm=0;%s\x1b\\" % chunks[-1])
+    # keep the cursor parked at home: an image filling the whole grid would
+    # otherwise push the cursor past the last row and scroll the screen
+    sys.stdout.write("\x1b[H")
     sys.stdout.flush()
 
 def render_sixel(game):
