@@ -711,7 +711,10 @@ class Game:
 
     def draw(self):
         if self.stdscr is None:
-            render_kitty(self)
+            if os.environ.get("DEPTHS_RENDER") == "sixel":
+                render_sixel(self)
+            else:
+                render_kitty(self)
         else:
             self.draw_curses()
 
@@ -844,15 +847,18 @@ MAP_TILES_H = 25
 SIDE_W = 290
 PAD = 10
 
-def render_kitty(game):
+def _draw_frame(game):
     try:
         from PIL import Image, ImageDraw, ImageFont
     except Exception:
         return
     cell_w, cell_h = get_cell_size_cached()
-    # image dimensions based on tile size
-    img_w = MAP_TILES_W * TILE + SIDE_W + PAD * 2
-    img_h = MAP_TILES_H * TILE + PAD * 2
+    import shutil
+    ts = shutil.get_terminal_size((80, 24))
+    img_w = ts.columns * cell_w
+    img_h = ts.lines * cell_h
+    global TILE
+    TILE = max(8, min((img_w - SIDE_W - PAD*2)//MAP_TILES_W, (img_h - PAD*2)//MAP_TILES_H))
     img = Image.new('RGB', (img_w, img_h), RGB["bg"])
     draw = ImageDraw.Draw(img)
     # font
@@ -1039,7 +1045,91 @@ def render_kitty(game):
         draw.text((img_w//2-120, img_h//2+10), f"Floor {game.floor}  Level {game.player['level']}  Gold {game.player['gold']}", fill=RGB["text"], font=font)
         draw.text((img_w//2-100, img_h//2+30), "Auto-restarts in auto mode" if game.auto else "Press r to retry, q to quit", fill=(139,148,158), font=font_small)
 
-    send_kitty(img)
+    return img
+
+def image_to_sixel(img):
+    from PIL import Image
+    w, h = img.size
+    qimg = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+    palette = qimg.getpalette()
+    out = []
+    out.append("\x1bPq\"1;1;%d;%d" % (w, h))
+    for band_y in range(0, h, 6):
+        col_values = {}
+        for x in range(w):
+            for dy in range(6):
+                yy = band_y + dy
+                if yy >= h:
+                    continue
+                ci = qimg.getpixel((x, yy))
+                if ci not in col_values:
+                    col_values[ci] = [0]*w
+                col_values[ci][x] |= (1 << dy)
+        for ci, vals in col_values.items():
+            if not any(vals):
+                continue
+            if palette is not None:
+                r = palette[ci*3]; g = palette[ci*3+1]; b = palette[ci*3+2]
+                out.append("#%d;2;%d;%d;%d" % (ci, r*100//255, g*100//255, b*100//255))
+            out.append("#%d" % ci)
+            line = ""
+            i = 0
+            n = len(vals)
+            while i < n:
+                j = i
+                while j < n and vals[j] == vals[i]:
+                    j += 1
+                run = j - i
+                ch = chr(63 + vals[i])
+                if run > 3:
+                    line += "!%d%s" % (run, ch)
+                else:
+                    line += ch * run
+                i = j
+            out.append(line)
+            out.append("$")
+        out.append("-")
+    out.append("\x1b\\" )
+    return "".join(out)
+
+def send_sixel(img):
+    data = image_to_sixel(img)
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.write(data)
+    sys.stdout.flush()
+
+def render_kitty(game):
+    try:
+        from PIL import Image
+    except Exception:
+        return
+    img = _draw_frame(game)
+    # send via kitty
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    data = base64.b64encode(buf.getvalue()).decode('ascii')
+    sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
+    sys.stdout.write("\x1b[2J\x1b[H")
+    chunk_size = 4096
+    chunks = [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
+    if not chunks:
+        sys.stdout.flush(); return
+    if len(chunks) == 1:
+        sys.stdout.write("\x1b_Ga=T,f=100;%s\x1b\\" % chunks[0])
+    else:
+        sys.stdout.write("\x1b_Ga=T,f=100,m=1;%s\x1b\\" % chunks[0])
+        for ch in chunks[1:-1]:
+            sys.stdout.write("\x1b_Gm=1;%s\x1b\\" % ch)
+        sys.stdout.write("\x1b_Gm=0;%s\x1b\\" % chunks[-1])
+    sys.stdout.flush()
+
+def render_sixel(game):
+    try:
+        from PIL import Image
+    except Exception:
+        return
+    img = _draw_frame(game)
+    send_sixel(img)
 
 _cell_size_cache = None
 def get_cell_size_cached():
@@ -1114,6 +1204,53 @@ def main_kitty():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         # clear
         sys.stdout.write("\x1b_Ga=d,d=A\x1b\\\x1b[2J\x1b[H")
+        sys.stdout.flush()
+
+def main_sixel():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    try:
+        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+        if "--auto" in sys.argv:
+            game.auto = True
+        while True:
+            game.game_over = False
+            while not game.game_over:
+                game.draw()
+                r,_,_ = select.select([fd], [], [], 0.12 if game.auto else None)
+                if r:
+                    key = read_key(fd)
+                    if key == ord('A'):
+                        game.auto = not game.auto
+                        game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
+                        continue
+                    if key in (ord('q'), 27):
+                        return
+                    res = game.handle_input(key)
+                    if res == "quit":
+                        return
+                elif game.auto:
+                    game.auto_step()
+            game.draw()
+            if game.auto:
+                time.sleep(2)
+                game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+                game.auto = True
+                continue
+            while True:
+                rr,_,_ = select.select([fd], [], [], None)
+                if rr:
+                    k = read_key(fd)
+                    if k == ord('r'):
+                        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+                        game.auto = False
+                        break
+                    if k in (ord('q'), 27):
+                        return
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
 
 def title_screen(stdscr):
@@ -1202,8 +1339,40 @@ def main(stdscr):
         if game.auto:
             continue
 
+def _safe_detect_sixel():
+    try:
+        return detect_sixel()
+    except Exception:
+        return False
+
+def detect_sixel():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        sys.stdout.write("\x1b[c")
+        sys.stdout.flush()
+        buf = ""
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            r,_,_ = select.select([fd], [], [], 0.1)
+            if not r:
+                if buf: break
+                continue
+            c = os.read(fd, 1).decode('latin1', 'replace')
+            buf += c
+            if c == 'c':
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return ";4;" in buf or ";4c" in buf or "4;" in buf
+
 if __name__ == "__main__":
     if os.environ.get("KITTY_WINDOW_ID"):
+        os.environ["DEPTHS_RENDER"] = "kitty"
         main_kitty()
+    elif "--sixel" in sys.argv or (sys.stdin.isatty() and _safe_detect_sixel()):
+        os.environ["DEPTHS_RENDER"] = "sixel"
+        main_sixel()
     else:
         curses.wrapper(main)
