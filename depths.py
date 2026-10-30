@@ -841,9 +841,13 @@ def send_kitty(img):
     img.save(buf, format='PNG')
     data = base64.b64encode(buf.getvalue()).decode('ascii')
     # delete previous images
+    import shutil
+    ts = shutil.get_terminal_size((80, 24))
     sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
+    # display scaled to full terminal grid (c cols, r rows) -> no scroll
+    hdr = "\x1b_Ga=T,f=100,c=%d,r=%d" % (ts.columns, ts.lines)
     chunk_size = 4096
     chunks = [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
     if not chunks:
@@ -1107,8 +1111,10 @@ def image_to_sixel(img):
 def send_sixel(img):
     data = image_to_sixel(img)
     sys.stdout.write("\x1b[?25l")
+    sys.stdout.write("\x1b[?7l")   # disable auto-wrap to avoid scroll
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.write(data)
+    sys.stdout.write("\x1b[?7h")   # re-enable
     sys.stdout.flush()
 
 def render_kitty(game):
@@ -1121,17 +1127,20 @@ def render_kitty(game):
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     data = base64.b64encode(buf.getvalue()).decode('ascii')
+    import shutil
+    ts = shutil.get_terminal_size((80, 24))
     sys.stdout.write("\x1b[?25l")
     sys.stdout.write("\x1b_Ga=d,d=A\x1b\\")
     sys.stdout.write("\x1b[2J\x1b[H")
+    hdr = "\x1b_Ga=T,f=100,c=%d,r=%d" % (ts.columns, ts.lines)
     chunk_size = 4096
     chunks = [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
     if not chunks:
         sys.stdout.flush(); return
     if len(chunks) == 1:
-        sys.stdout.write("\x1b_Ga=T,f=100;%s\x1b\\" % chunks[0])
+        sys.stdout.write("%s;%s\x1b\\" % (hdr, chunks[0]))
     else:
-        sys.stdout.write("\x1b_Ga=T,f=100,m=1;%s\x1b\\" % chunks[0])
+        sys.stdout.write("%s,m=1;%s\x1b\\" % (hdr, chunks[0]))
         for ch in chunks[1:-1]:
             sys.stdout.write("\x1b_Gm=1;%s\x1b\\" % ch)
         sys.stdout.write("\x1b_Gm=0;%s\x1b\\" % chunks[-1])
@@ -1245,9 +1254,7 @@ def main_kitty():
                         return
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[?25h")
-        # clear
-        sys.stdout.write("\x1b_Ga=d,d=A\x1b\\\x1b[2J\x1b[H")
+        sys.stdout.write("\x1b[?1049l\x1b[?25h")
         sys.stdout.flush()
 
 def main_sixel():
@@ -1255,6 +1262,8 @@ def main_sixel():
     old = termios.tcgetattr(fd)
     tty.setcbreak(fd)
     try:
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        sys.stdout.flush()
         game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
         if "--auto" in sys.argv:
             game.auto = True
@@ -1301,8 +1310,7 @@ def main_sixel():
                         return
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[?25h")
-        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.write("\x1b[?1049l\x1b[?25h")
         sys.stdout.flush()
 
 def title_screen(stdscr):
