@@ -25,6 +25,7 @@ RGB = {
     "potion": (236,72,153), "food": (132,204,22), "weapon": (245,158,11), "armor": (59,130,246),
     "gold": (250,204,21), "scroll": (232,121,249), "ring": (244,114,182), "wand": (196,181,253),
     "key": (253,224,71), "trap": (239,68,68), "fog": (0,0,0), "dim": (8,12,20),
+    "bossB": (253,224,71), "bossZ": (226,232,240), "bossL": (168,85,247),
     "bg": (10,14,20), "panel": (22,27,34), "text": (201,209,217), "hp": (63,185,80),
     "title": (88,166,255),
 }
@@ -36,6 +37,7 @@ COLORS = {
     "rat": 101, "vampire": 125, "golem": 242, "potion": 201, "weapon": 208,
     "armor": 33, "gold": 220, "scroll": 213, "food": 112, "ring": 219,
     "wand": 177, "key": 220, "trap": 196, "text": 255, "hp": 196, "xp": 45,
+    "bossB": 226, "bossZ": 255, "bossL": 129,
     "dim": 238, "msg": 226, "title": 51, "inv": 51, "equip": 39,
 }
 
@@ -45,6 +47,25 @@ ENEMY_STATS = {
     "n": (14, 2, 8), "m": (15, 4, 6), "r": (3, 1, 1), "V": (22, 5, 12),
     "G": (40, 6, 15),
 }
+
+ENEMY_NAMES = {"g": "the goblin", "o": "the orc", "T": "the troll", "D": "the dragon",
+               "s": "the skeleton", "b": "the bat", "W": "the wraith", "a": "the archer",
+               "n": "the necromancer", "m": "the mimic", "r": "the rat",
+               "V": "the vampire", "G": "the golem"}
+
+BOSSES = {
+    5:  {"ch": "B", "name": "the Goblin King",      "hp": 55,  "atk": 8,  "xp": 60,  "color": "bossB"},
+    10: {"ch": "Z", "name": "the Bone Colossus",    "hp": 100, "atk": 13, "xp": 150, "color": "bossZ"},
+    15: {"ch": "L", "name": "the Lich of the Depths","hp": 150, "atk": 16, "xp": 300, "color": "bossL"},
+}
+
+def ename(e):
+    if e.get("boss"):
+        return e.get("name", "the boss")
+    return ENEMY_NAMES.get(e["ch"], e["ch"])
+
+def cap(s):
+    return s[0].upper() + s[1:] if s else s
 
 def init_colors():
     curses.start_color()
@@ -143,7 +164,7 @@ def place_entities(grid, width, height, floor, player_pos):
     if floor >= 4: pool += ["T","m","G"]
     if floor >= 5: pool += ["D","n","m"]
     if floor % 5 == 0:
-        pool = ["D","T","T","W","W","n","m"]
+        pool = ["o","s","T","W","n","m"]  # boss floors: fewer heavies, the boss is the challenge
     idx = 0
     n_enemies = 4 + floor*2 + random.randint(0, 3)
     for _ in range(n_enemies):
@@ -153,8 +174,13 @@ def place_entities(grid, width, height, floor, player_pos):
         hp, atk, xp = ENEMY_STATS[ch]
         hp = int(hp * (1 + 0.12*(floor-1)))
         atk = int(atk * (1 + 0.08*(floor-1)))
-        entities.append({"ch": ch, "x": x, "y": y, "hp": hp, "maxhp": hp,
-                        "atk": atk, "name": ch, "xp": xp})
+        ent = {"ch": ch, "x": x, "y": y, "hp": hp, "maxhp": hp,
+               "atk": atk, "name": ch, "xp": xp}
+        if ch == "b":
+            ent["fast"] = True
+        if ch in ("T", "G"):
+            ent["slow"] = True
+        entities.append(ent)
     n_items = random.randint(3, 5) + floor//2
     for _ in range(n_items):
         if idx >= len(cands): break
@@ -178,6 +204,40 @@ def place_entities(grid, width, height, floor, player_pos):
     if far:
         sx, sy = random.choice(far)
         grid[sy][sx] = 3  # stairs
+    # locked doors on corridor chokepoints, with one key per door
+    n_locks = 0
+    if floor >= 2:
+        choke = []
+        for y in range(1, height-1):
+            for x in range(1, width-1):
+                if grid[y][x] == 0:
+                    if (grid[y-1][x] == 1 and grid[y+1][x] == 1) or (grid[y][x-1] == 1 and grid[y][x+1] == 1):
+                        choke.append((x, y))
+        random.shuffle(choke)
+        for x, y in choke[:2]:
+            grid[y][x] = 5
+            n_locks += 1
+    for _ in range(n_locks):
+        if idx < len(cands):
+            x, y = cands[idx]; idx += 1
+            items.append({"ch": "k", "x": x, "y": y})
+        else:
+            break
+    # floor boss, lurking near the stairs
+    boss = BOSSES.get(floor)
+    if boss:
+        spot = None
+        if far:
+            near = [c for c in cands if c not in occupied and c != (sx, sy)
+                    and abs(c[0]-sx) + abs(c[1]-sy) <= 7]
+            if near:
+                spot = random.choice(near)
+        if spot is None and cands:
+            spot = cands[-1]
+        if spot:
+            entities.append({"ch": boss["ch"], "x": spot[0], "y": spot[1],
+                             "hp": boss["hp"], "maxhp": boss["hp"], "atk": boss["atk"],
+                             "name": boss["name"], "xp": boss["xp"], "boss": True})
     if random.random() < 0.35 and idx < len(cands):
         x, y = cands[idx]; idx += 1
         items.append({"ch": "k", "x": x, "y": y})
@@ -208,7 +268,15 @@ class Game:
         self.inventory_open = False
         self.inv_cursor = 0
         self.auto = False
+        self.tick_count = 0
+        self.starve_acc = 0
+        self.hungry_warned = False
+        self.banner = None       # (text, expiry time)
+        self.flash_until = 0.0   # red screen edge on player damage
         self.new_floor()
+
+    def set_banner(self, text, secs=2.5):
+        self.banner = (text, time.time() + secs)
 
     def new_floor(self):
         self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
@@ -218,6 +286,10 @@ class Game:
         self.entities, self.items, self.traps = place_entities(
             self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]))
         self.messages.append(f"--- Floor {self.floor}: {biome(self.floor)} ---")
+        boss = BOSSES.get(self.floor)
+        if boss:
+            self.msg(f"{cap(boss['name'])} lurks on this floor!")
+            self.set_banner(f"BOSS: {cap(boss['name'])}", 3.0)
         self.compute_fov()
 
     def compute_fov(self):
@@ -241,7 +313,7 @@ class Game:
         x, y = x0, y0
         while True:
             if x == x1 and y == y1: return True
-            if (x,y) != (x0,y0) and self.grid[y][x] in (0,4):
+            if (x,y) != (x0,y0) and self.grid[y][x] in (0,4,5):
                 return False
             e2 = 2*err
             if e2 > -dy:
@@ -275,6 +347,14 @@ class Game:
         if cell == 0:
             self.msg("A wall blocks your path.")
             return
+        if cell == 5:
+            if self.player["keys"] > 0:
+                self.player["keys"] -= 1
+                self.grid[ny][nx] = 2
+                self.msg("You unlock the door.")
+            else:
+                self.msg("The door is locked. You need a key.")
+                return
         if cell == 4:
             self.grid[ny][nx] = 2
             self.msg("You found a secret door!")
@@ -291,25 +371,37 @@ class Game:
             if t["x"]==nx and t["y"]==ny and not t.get("triggered"):
                 self.trigger_trap(t)
         if self.grid[ny][nx] == 3:
-            if self.floor >= 15:
-                self.victory = True; self.game_over = True
-                self.msg("You escaped the depths!")
-                return
-            self.floor += 1
-            self.msg(f"You descend to floor {self.floor}.")
-            self.new_floor()
-            self.compute_fov()
-            return
+            self.msg("You stand on the stairs. Press > to descend.")
         self.player["x"], self.player["y"] = nx, ny
         self.reveal_secrets()
         self.compute_fov()
 
     def tick(self):
-        # real-time enemy turn + hunger
-        self.player["hunger"] += 0.2
-        if self.player["hunger"] >= 40 and int(self.player["hunger"]) % 10 == 0 and self.player["hunger"] % 1 < 0.25:
-            self.player["hp"] = max(1, self.player["hp"]-1)
-            self.msg("You are starving.")
+        # real-time enemy turn + hunger + regen
+        self.tick_count += 1
+        p = self.player
+        p["hunger"] = min(120, p["hunger"] + 0.2)
+        if p["hunger"] >= 80:
+            self.starve_acc += 1
+            if self.starve_acc >= 25:  # ~12s of real time per starvation point
+                self.starve_acc = 0
+                p["hp"] -= 1
+                self.msg("You are starving!")
+                if p["hp"] <= 0:
+                    p["hp"] = 0
+                    self.game_over = True
+                    self.msg("You starved to death.")
+        elif p["hunger"] >= 50:
+            if not self.hungry_warned:
+                self.msg("You are getting hungry.")
+                self.hungry_warned = True
+        else:
+            self.hungry_warned = False
+            # slow regen while well fed and out of immediate danger
+            if (p["hp"] < p["maxhp"] and self.tick_count % 10 == 0
+                    and not any(e["hp"] > 0 and abs(e["x"]-p["x"]) + abs(e["y"]-p["y"]) <= 2
+                                for e in self.entities)):
+                p["hp"] += 1
         self.enemy_turn()
         self.reveal_secrets()
         self.compute_fov()
@@ -331,10 +423,13 @@ class Game:
             dmg = int(dmg * 1.8)
             self.msg("Critical hit!")
         e["hp"] -= dmg
-        self.msg(f"You hit {e['ch']} for {dmg}.")
+        self.msg(f"You hit {ename(e)} for {dmg}.")
         if e["hp"] <= 0:
             e["hp"] = 0
-            self.msg(f"{e['ch']} dies.")
+            self.msg(f"{cap(ename(e))} dies!")
+            if e.get("boss"):
+                self.msg("The way to the stairs is clear.")
+                self.set_banner(f"{cap(ename(e))} is slain!", 3.0)
             self.player["xp"] += e.get("xp", 3)
             if random.random() < 0.4:
                 amt = random.randint(1, 6) + self.floor
@@ -344,47 +439,87 @@ class Game:
 
     def enemy_turn(self):
         for e in self.entities:
-            if e["hp"] <= 0: continue
-            if abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]) == 1:
-                dmg = max(1, e["atk"] - self.total_def() + random.randint(-1, 1))
-                if e["ch"] == "V":
-                    e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
-                self.player["hp"] -= dmg
-                self.msg(f"{e['ch']} hits you for {dmg}.")
-                if self.player["hp"] <= 0:
-                    self.player["hp"] = 0
-                    self.game_over = True
+            if e["hp"] <= 0:
                 continue
-            if e["ch"] == "a" and (e["x"],e["y"]) in self.visible:
-                dist = abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"])
-                if 2 <= dist <= 6 and self.line_of_sight(e["x"],e["y"],self.player["x"],self.player["y"]):
-                    if random.random() < 0.6:
-                        dmg = max(1, e["atk"] - self.total_def() + random.randint(0,1))
-                        self.player["hp"] -= dmg
-                        self.msg(f"{e['ch']} shoots you for {dmg}.")
-                        if self.player["hp"] <= 0:
-                            self.player["hp"]=0; self.game_over=True
-                        continue
-            if e["ch"] == "n" and (e["x"],e["y"]) in self.visible:
-                if random.random() < 0.25:
-                    for dx,dy in ((1,0),(-1,0),(0,1),(0,-1)):
-                        nx,ny = e["x"]+dx, e["y"]+dy
-                        if 0<=nx<self.mw and 0<=ny<self.mh and self.grid[ny][nx]==1 and not any(o["x"]==nx and o["y"]==ny and o["hp"]>0 for o in self.entities):
-                            self.entities.append({"ch":"s","x":nx,"y":ny,"hp":8,"maxhp":8,"atk":3,"name":"s","xp":4})
-                            self.msg("Necromancer summons a skeleton.")
-                            break
-            if (e["x"],e["y"]) in self.visible or abs(e["x"]-self.player["x"])+abs(e["y"]-self.player["y"]) <= 7:
-                dx = 0
-                if e["x"] < self.player["x"]: dx = 1
-                elif e["x"] > self.player["x"]: dx = -1
-                dy = 0
-                if e["y"] < self.player["y"]: dy = 1
-                elif e["y"] > self.player["y"]: dy = -1
-                if e["ch"] == "b" and random.random() < 0.4:
-                    dx, dy = random.choice([(1,0),(-1,0),(0,1),(0,-1),(0,0)])
-                nx, ny = e["x"]+dx, e["y"]+dy
-                if 0<=nx<self.mw and 0<=ny<self.mh and self.grid[ny][nx] in (1,2,3) and not any(o["x"]==nx and o["y"]==ny and o["hp"]>0 for o in self.entities if o is not e) and not (nx==self.player["x"] and ny==self.player["y"]):
-                    e["x"], e["y"] = nx, ny
+            acts = 2 if e.get("fast") else 1
+            if e.get("slow") and self.tick_count % 2:
+                acts = 0
+            for _ in range(acts):
+                if self.game_over or e["hp"] <= 0:
+                    break
+                self.enemy_act(e)
+
+    def enemy_act(self, e):
+        p = self.player
+        px, py = p["x"], p["y"]
+        ex, ey = e["x"], e["y"]
+        dist = abs(ex-px) + abs(ey-py)
+        sees = (ex, ey) in self.visible or (dist <= 8 and self.line_of_sight(ex, ey, px, py))
+        if sees and dist <= 8:
+            e["alert"] = True
+        if dist == 1:
+            dmg = max(1, e["atk"] - self.total_def() + random.randint(-1, 1))
+            if random.random() < 0.05:
+                dmg = int(dmg * 1.7)
+                self.msg(f"{cap(ename(e))} lands a brutal blow for {dmg}!")
+            else:
+                self.msg(f"{cap(ename(e))} hits you for {dmg}.")
+            if e["ch"] == "V":
+                e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
+            p["hp"] -= dmg
+            self.flash_until = time.time() + 0.25
+            if p["hp"] <= 0:
+                p["hp"] = 0
+                self.game_over = True
+                self.msg(f"You were slain by {ename(e)}.")
+            return
+        if e["ch"] == "a" and sees and 2 <= dist <= 6:
+            if random.random() < 0.6:
+                dmg = max(1, e["atk"] - self.total_def() + random.randint(0, 1))
+                p["hp"] -= dmg
+                self.flash_until = time.time() + 0.25
+                self.msg(f"{cap(ename(e))} shoots you for {dmg}.")
+                if p["hp"] <= 0:
+                    p["hp"] = 0; self.game_over = True
+                    self.msg(f"You were shot by {ename(e)}.")
+            return
+        if e["ch"] == "n" and sees and random.random() < 0.25:
+            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                nx, ny = ex+dx, ey+dy
+                if 0 <= nx < self.mw and 0 <= ny < self.mh and self.grid[ny][nx] == 1 \
+                        and not any(o["x"] == nx and o["y"] == ny and o["hp"] > 0 for o in self.entities):
+                    self.entities.append({"ch": "s", "x": nx, "y": ny, "hp": 8, "maxhp": 8,
+                                          "atk": 3, "name": "s", "xp": 4})
+                    self.msg("The necromancer summons a skeleton!")
+                    break
+        # movement
+        if e.get("boss") or e.get("alert"):
+            step = self.bfs_next((ex, ey), (px, py))
+            if step:
+                e["x"], e["y"] = step
+                return
+        if sees or dist <= 7:
+            e["alert"] = True
+            dx = 0
+            if ex < px: dx = 1
+            elif ex > px: dx = -1
+            dy = 0
+            if ey < py: dy = 1
+            elif ey > py: dy = -1
+            if e["ch"] == "b" and random.random() < 0.4:
+                dx, dy = random.choice([(1,0),(-1,0),(0,1),(0,-1),(0,0)])
+            nx, ny = ex+dx, ey+dy
+            if 0 <= nx < self.mw and 0 <= ny < self.mh and self.grid[ny][nx] in (1, 2, 3) \
+                    and not any(o["x"] == nx and o["y"] == ny and o["hp"] > 0 for o in self.entities if o is not e) \
+                    and not (nx == px and ny == py):
+                e["x"], e["y"] = nx, ny
+        elif random.random() < 0.2:
+            dx, dy = random.choice([(1,0),(-1,0),(0,1),(0,-1)])
+            nx, ny = ex+dx, ey+dy
+            if 0 <= nx < self.mw and 0 <= ny < self.mh and self.grid[ny][nx] == 1 \
+                    and not any(o["x"] == nx and o["y"] == ny and o["hp"] > 0 for o in self.entities if o is not e) \
+                    and not (nx == px and ny == py):
+                e["x"], e["y"] = nx, ny
 
     def trigger_trap(self, t):
         t["triggered"] = True
@@ -422,10 +557,12 @@ class Game:
             self.player["food"] += 1
             self.msg("You pick up food.")
         elif ch == "/":
-            self.player["inventory"].append({"ch":"/","name":f"weapon (+{2+self.floor//3} ATK)","item":{"type":"weapon","atk":2+self.floor//3},"kind":"equip"})
+            wname = f"weapon (+{2+self.floor//3} ATK)"
+            self.player["inventory"].append({"ch":"/","name":wname,"item":{"type":"weapon","atk":2+self.floor//3,"name":wname},"kind":"equip"})
             self.msg("You find a weapon. (i to equip)")
         elif ch == "[":
-            self.player["inventory"].append({"ch":"[","name":f"armor (+{1+self.floor//4} DEF)","item":{"type":"armor","def":1+self.floor//4,"hp":2+self.floor//2},"kind":"equip"})
+            aname = f"armor (+{1+self.floor//4} DEF)"
+            self.player["inventory"].append({"ch":"[","name":aname,"item":{"type":"armor","def":1+self.floor//4,"hp":2+self.floor//2,"name":aname},"kind":"equip"})
             self.msg("You find armor.")
         elif ch == "$":
             amt = random.randint(5, 20) + self.floor*2
@@ -435,7 +572,7 @@ class Game:
             self.player["scrolls"] += 1
             self.msg("You find a scroll.")
         elif ch == "=":
-            self.player["inventory"].append({"ch":"=","name":"ring (+1 ATK/DEF)","item":{"type":"ring","atk":1,"def":1},"kind":"equip"})
+            self.player["inventory"].append({"ch":"=","name":"ring (+1 ATK/DEF)","item":{"type":"ring","atk":1,"def":1,"name":"ring (+1 ATK/DEF)"},"kind":"equip"})
             self.msg("You find a ring.")
         elif ch == "w":
             self.player["inventory"].append({"ch":"w","name":"wand (fireball)","item":{"type":"wand"},"kind":"wand"})
@@ -457,30 +594,42 @@ class Game:
         if self.player["food"] <= 0:
             self.msg("No food."); return
         self.player["food"] -= 1
-        self.player["hunger"] = max(0, self.player["hunger"]-30)
-        self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+4)
-        self.msg("You eat. Hunger -30, +4 HP.")
+        self.player["hunger"] = max(0, self.player["hunger"]-40)
+        self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+5)
+        self.msg("You eat. Hunger -40, +5 HP.")
         self.compute_fov()
 
     def use_scroll(self):
         if self.player["scrolls"] <= 0:
             self.msg("No scrolls."); return
-        self.player["scrolls"] -= 1
         effect = random.choice(["reveal","fireball","teleport","heal"])
+        if effect == "fireball":
+            targets = [e for e in self.entities
+                       if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
+            if not targets:
+                self.msg("No target in sight for the fireball.")
+                return  # scroll not wasted
+        self.player["scrolls"] -= 1
         if effect == "reveal":
             for y in range(self.mh):
                 for x in range(self.mw):
                     self.explored.add((x,y))
             self.msg("The scroll reveals the floor.")
         elif effect == "fireball":
-            cnt = 0
-            for e in self.entities:
-                if e["hp"]>0 and (e["x"],e["y"]) in self.visible:
-                    e["hp"] -= 12; cnt += 1
-                    if e["hp"]<=0:
-                        e["hp"]=0; self.msg(f"{e['ch']} dies.")
-                        self.player["xp"] += e.get("xp",3); self.check_level()
-            self.msg(f"Fireball hits {cnt} enemies.")
+            targets = [e for e in self.entities
+                       if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
+            targets.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
+            t = targets[0]
+            self.msg("A fireball erupts!")
+            for e in list(targets):
+                d = abs(e["x"]-t["x"]) + abs(e["y"]-t["y"])
+                if d <= 1:
+                    e["hp"] -= 14 if d == 0 else 7
+                    if e["hp"] <= 0:
+                        e["hp"] = 0
+                        self.msg(f"{cap(ename(e))} dies!")
+                        self.player["xp"] += e.get("xp", 3)
+                        self.check_level()
         elif effect == "teleport":
             tiles = [(x,y) for y in range(self.mh) for x in range(self.mw) if self.grid[y][x] in (1,2,3) and not any(e["x"]==x and e["y"]==y and e["hp"]>0 for e in self.entities)]
             if tiles:
@@ -500,9 +649,9 @@ class Game:
                 if d <= 5 and self.line_of_sight(self.player["x"],self.player["y"],e["x"],e["y"]):
                     e["hp"] -= 15; cnt += 1
                     if e["hp"]<=0:
-                        e["hp"]=0; self.msg(f"{e['ch']} dies.")
+                        e["hp"]=0; self.msg(f"{cap(ename(e))} dies!")
                         self.player["xp"] += e.get("xp",3); self.check_level()
-        self.msg(f"Wand hits {cnt} enemies.")
+        self.msg(f"The wand zaps {cnt} enemies.")
         self.player["inventory"] = [i for i in self.player["inventory"] if i is not inv_item]
         self.compute_fov()
 
@@ -607,8 +756,19 @@ class Game:
         elif key == ord('S'): self.save_game()
         elif key == ord('L'): self.load_game()
 
+    def stairs_blocked(self):
+        for e in self.entities:
+            if e.get("boss") and e["hp"] > 0:
+                return e
+        return None
+
     def move_stairs(self):
         if self.grid[self.player["y"]][self.player["x"]] == 3:
+            boss = self.stairs_blocked()
+            if boss:
+                self.msg(f"{cap(ename(boss))} blocks the stairs!")
+                self.set_banner(f"{cap(ename(boss))} guards the stairs!", 2.0)
+                return
             if self.floor >= 15:
                 self.victory = True; self.game_over = True
                 self.msg("You escaped the depths!")
@@ -616,6 +776,31 @@ class Game:
             self.floor += 1
             self.msg(f"You descend to floor {self.floor}.")
             self.new_floor()
+
+    def load_game(self):
+        try:
+            with open(SAVE) as f:
+                data = json.load(f)
+        except Exception:
+            self.msg("No save found.")
+            return
+        self.floor = data["floor"]
+        self.player = data["player"]
+        for k, v in (("keys",0),("food",0),("potions",0),("scrolls",0),("hunger",0),
+                     ("inventory",[]),("weapon",None),("armor",None),("ring",None)):
+            self.player.setdefault(k, v)
+        self.explored = set(tuple(t) for t in data["explored"])
+        self.messages = data.get("messages", [])
+        self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
+        self.entities, self.items, self.traps = place_entities(
+            self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]))
+        if self.grid[self.player["y"]][self.player["x"]] not in (1, 2, 3):
+            rx, ry, rw, rh = rooms[0]
+            self.player["x"], self.player["y"] = rx + rw//2, ry + rh//2
+        self.game_over = False
+        self.victory = False
+        self.msg("Game loaded.")
+        self.compute_fov()
 
     def char_sheet(self):
         p = self.player
@@ -637,12 +822,15 @@ class Game:
         from collections import deque
         if start == goal:
             return None
+        occupied = {(e["x"], e["y"]) for e in self.entities if e["hp"] > 0}
+        occupied.discard(goal)
+        occupied.discard(start)
         def walkable(x, y):
             if not (0 <= x < self.mw and 0 <= y < self.mh):
                 return False
-            if self.grid[y][x] in (0, 4):
+            if self.grid[y][x] in (0, 4, 5):
                 return False
-            if (x, y) != goal and any(e["hp"] > 0 and e["x"] == x and e["y"] == y for e in self.entities):
+            if (x, y) in occupied:
                 return False
             return True
         q = deque([start])
@@ -677,7 +865,7 @@ class Game:
         # heal
         if self.player["hp"] < self.player["maxhp"] * 0.35 and self.player["potions"] > 0:
             self.use_potion(); return
-        if self.player["hunger"] > 60 and self.player["food"] > 0:
+        if self.player["hunger"] > 55 and self.player["food"] > 0:
             self.eat_food(); return
         # adjacent enemy -> attack
         for e in self.entities:
@@ -686,30 +874,34 @@ class Game:
                 return
         # choose target
         target = None
-        enemies = [e for e in self.entities if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
-        if enemies:
-            enemies.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
-            target = (enemies[0]["x"], enemies[0]["y"])
+        boss = self.stairs_blocked()
+        if boss:
+            target = (boss["x"], boss["y"])
         else:
-            vis_items = [it for it in self.items if (it["x"], it["y"]) in self.visible]
-            if vis_items:
-                vis_items.sort(key=lambda it: abs(it["x"]-self.player["x"]) + abs(it["y"]-self.player["y"]))
-                target = (vis_items[0]["x"], vis_items[0]["y"])
+            enemies = [e for e in self.entities if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
+            if enemies:
+                enemies.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
+                target = (enemies[0]["x"], enemies[0]["y"])
             else:
-                for y in range(self.mh):
-                    for x in range(self.mw):
-                        if self.grid[y][x] == 3:
-                            target = (x, y)
-                if target is None:
-                    # nearest unexplored floor tile
-                    best = None; bestd = 10**9
+                vis_items = [it for it in self.items if (it["x"], it["y"]) in self.visible]
+                if vis_items:
+                    vis_items.sort(key=lambda it: abs(it["x"]-self.player["x"]) + abs(it["y"]-self.player["y"]))
+                    target = (vis_items[0]["x"], vis_items[0]["y"])
+                else:
                     for y in range(self.mh):
                         for x in range(self.mw):
-                            if (x, y) not in self.explored and self.grid[y][x] in (1, 2):
-                                d = abs(x-self.player["x"]) + abs(y-self.player["y"])
-                                if d < bestd:
-                                    bestd = d; best = (x, y)
-                    target = best
+                            if self.grid[y][x] == 3:
+                                target = (x, y)
+                    if target is None:
+                        # nearest unexplored floor tile
+                        best = None; bestd = 10**9
+                        for y in range(self.mh):
+                            for x in range(self.mw):
+                                if (x, y) not in self.explored and self.grid[y][x] in (1, 2):
+                                    d = abs(x-self.player["x"]) + abs(y-self.player["y"])
+                                    if d < bestd:
+                                        bestd = d; best = (x, y)
+                        target = best
         if target is None:
             return
         if (self.player["x"], self.player["y"]) == target and self.grid[self.player["y"]][self.player["x"]] == 3:
@@ -748,7 +940,10 @@ class Game:
                     elif ch in (2,4):
                         self.stdscr.addstr(y, x, "+", cp("door"))
                 elif (x,y) in self.explored:
-                    self.stdscr.addstr(y, x, " ", cp("dim"))
+                    if ch == 5:
+                        self.stdscr.addstr(y, x, "+", cp("key"))
+                    else:
+                        self.stdscr.addstr(y, x, " ", cp("dim"))
         for t in self.traps:
             if (t["x"],t["y"]) in self.visible and t.get("triggered"):
                 self.stdscr.addstr(t["y"], t["x"], t["ch"], cp("trap"))
@@ -756,16 +951,21 @@ class Game:
             if (it["x"],it["y"]) in self.visible:
                 col = {"!":"potion","*":"food","/":"weapon","[":"armor","$":"gold","?":"scroll","=":"ring","w":"wand","k":"key"}[it["ch"]]
                 self.stdscr.addstr(it["y"], it["x"], it["ch"], cp(col))
+            elif (it["x"],it["y"]) in self.explored:
+                self.stdscr.addstr(it["y"], it["x"], it["ch"], cp("dim"))
         for e in self.entities:
             if e["hp"]>0 and e.get("disguise") and (e["x"],e["y"]) in self.visible:
                 col = {"!":"potion","*":"food","/":"weapon","[":"armor","$":"gold","?":"scroll","=":"ring"}[e["disguise"]]
                 self.stdscr.addstr(e["y"], e["x"], e["disguise"], cp(col))
         ENEMY_COLOR = {"g":"goblin","o":"orc","T":"troll","D":"dragon","s":"skeleton",
             "b":"bat","W":"wraith","a":"archer","n":"necromancer","m":"mimic","r":"rat",
-            "V":"vampire","G":"golem"}
+            "V":"vampire","G":"golem","B":"bossB","Z":"bossZ","L":"bossL"}
         for e in self.entities:
             if e["hp"]>0 and not e.get("disguise") and (e["x"],e["y"]) in self.visible:
-                self.stdscr.addstr(e["y"], e["x"], e["ch"], cp(ENEMY_COLOR.get(e["ch"], "goblin")))
+                attr = cp(ENEMY_COLOR.get(e["ch"], "goblin"))
+                if e.get("boss"):
+                    attr |= curses.A_BOLD
+                self.stdscr.addstr(e["y"], e["x"], e["ch"], attr)
         self.stdscr.addstr(self.player["y"], self.player["x"], PLAYER, cp("player"))
         sy = self.mh
         p = self.player
@@ -911,6 +1111,7 @@ def _draw_frame(game):
                 if cell == 0: col = RGB["wall"]
                 elif cell == 1: col = RGB["floor"] if ((x+y)%2==0) else RGB["floorHi"]
                 elif cell == 3: col = RGB["stairs"]
+                elif cell == 5: col = (66,52,30)
                 elif cell in (2,4): col = RGB["door"]
                 else: col = RGB["floor"]
             draw.rectangle([rx, ry, rx+TILE-1, ry+TILE-1], fill=col)
@@ -918,6 +1119,9 @@ def _draw_frame(game):
                 draw.text((rx+TILE//2-3, ry+TILE//2-6), ">", fill=RGB["stairs"], font=font_big)
             if explored and visible and cell in (2,4):
                 draw.text((rx+TILE//2-3, ry+TILE//2-6), "+", fill=RGB["door"], font=font_big)
+            if explored and cell == 5:
+                draw.rectangle([rx+1, ry+1, rx+TILE-2, ry+TILE-2], outline=RGB["key"])
+                draw.text((rx+TILE//2-3, ry+TILE//2-6), "+", fill=RGB["key"], font=font_big)
 
     # traps triggered
     for t in game.traps:
@@ -925,14 +1129,22 @@ def _draw_frame(game):
             rx = ox + t["x"]*TILE; ry = oy + t["y"]*TILE
             draw.text((rx+TILE//2-3, ry+TILE//2-6), t["ch"], fill=RGB["trap"], font=font_big)
 
-    # items
+    # items (remembered dimly when explored but not visible)
+    item_colmap = {"!":RGB["potion"],"*":RGB["food"],"/":RGB["weapon"],"[":RGB["armor"],"$":RGB["gold"],"?":RGB["scroll"],"=":RGB["ring"],"w":RGB["wand"],"k":RGB["key"]}
     for it in game.items:
-        if (it["x"],it["y"]) in game.visible and it["x"] < MAP_TILES_W and it["y"] < MAP_TILES_H:
-            rx = ox + it["x"]*TILE + TILE//2
-            ry = oy + it["y"]*TILE + TILE//2
-            colmap = {"!":RGB["potion"],"*":RGB["food"],"/":RGB["weapon"],"[":RGB["armor"],"$":RGB["gold"],"?":RGB["scroll"],"=":RGB["ring"],"w":RGB["wand"],"k":RGB["key"]}
-            c = colmap.get(it["ch"], (255,255,255))
-            draw.ellipse([rx-5, ry-5, rx+5, ry+5], fill=c)
+        if it["x"] >= MAP_TILES_W or it["y"] >= MAP_TILES_H:
+            continue
+        key = (it["x"], it["y"])
+        if key in game.visible:
+            c = item_colmap.get(it["ch"], (255,255,255))
+        elif key in game.explored:
+            c = tuple(v//3 for v in item_colmap.get(it["ch"], (255,255,255)))
+        else:
+            continue
+        rx = ox + it["x"]*TILE + TILE//2
+        ry = oy + it["y"]*TILE + TILE//2
+        draw.ellipse([rx-5, ry-5, rx+5, ry+5], fill=c)
+        if key in game.visible:
             draw.text((rx-3, ry-5), it["ch"], fill=(0,0,0), font=font_small)
 
     # mimics
@@ -948,7 +1160,8 @@ def _draw_frame(game):
     # enemies
     enemy_color = {"g":RGB["goblin"],"o":RGB["orc"],"T":RGB["troll"],"D":RGB["dragon"],"s":RGB["skeleton"],
                    "b":RGB["bat"],"W":RGB["wraith"],"a":RGB["archer"],"n":RGB["necromancer"],"m":RGB["mimic"],
-                   "r":RGB["rat"],"V":RGB["vampire"],"G":RGB["golem"]}
+                   "r":RGB["rat"],"V":RGB["vampire"],"G":RGB["golem"],
+                   "B":RGB["bossB"],"Z":RGB["bossZ"],"L":RGB["bossL"]}
     for e in game.entities:
         if e["hp"]<=0 or e.get("disguise"): continue
         if (e["x"],e["y"]) in game.visible and e["x"] < MAP_TILES_W and e["y"] < MAP_TILES_H:
@@ -957,7 +1170,10 @@ def _draw_frame(game):
             c = enemy_color.get(e["ch"], (239,68,68))
             cx = rx + TILE//2; cy = ry + TILE//2
             ch = e["ch"]
-            if ch in ("g","r"):
+            if e.get("boss"):
+                draw.rectangle([rx, ry, rx+TILE-1, ry+TILE-1], fill=c, outline=RGB["key"], width=2)
+                draw.polygon([(cx-4, ry-5), (cx-4, ry+1), (cx, ry-2), (cx+4, ry+1), (cx+4, ry-5)], fill=RGB["key"])
+            elif ch in ("g","r"):
                 draw.ellipse([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
             elif ch in ("o","V"):
                 draw.ellipse([rx+2, ry+2, rx+TILE-3, ry+TILE-3], fill=c)
@@ -982,8 +1198,12 @@ def _draw_frame(game):
                 draw.rectangle([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
             # hp bar
             pct = e["hp"]/e["maxhp"]
-            draw.rectangle([rx+3, ry+1, rx+TILE-4, ry+3], fill=(0,0,0))
-            draw.rectangle([rx+3, ry+1, rx+3+int((TILE-7)*pct), ry+3], fill=RGB["hp"])
+            if e.get("boss"):
+                draw.rectangle([rx, ry+TILE-3, rx+TILE-1, ry+TILE-1], fill=(0,0,0))
+                draw.rectangle([rx, ry+TILE-3, rx+int(TILE*pct), ry+TILE-1], fill=RGB["hp"])
+            else:
+                draw.rectangle([rx+3, ry+1, rx+TILE-4, ry+3], fill=(0,0,0))
+                draw.rectangle([rx+3, ry+1, rx+3+int((TILE-7)*pct), ry+3], fill=RGB["hp"])
             draw.text((rx+TILE//2-4, ry+TILE//2-7), e["ch"], fill=(255,255,255), font=font_big)
 
     # player
@@ -1021,6 +1241,10 @@ def _draw_frame(game):
         f"Potions {p['potions']}  Scrolls {p['scrolls']}",
         f"Keys {p['keys']}",
     ]
+    boss = next((e for e in game.entities if e.get("boss") and e["hp"] > 0), None)
+    if boss:
+        lines.append(f"{cap(ename(boss))}")
+        lines.append(f"  {boss['hp']}/{boss['maxhp']} HP")
     for l in lines:
         draw.text((sx, sy), l, fill=RGB["text"], font=font)
         sy += 20
@@ -1075,6 +1299,24 @@ def _draw_frame(game):
             draw.text((bx+12, y), "(empty)", fill=(139,148,158), font=font_small)
             y += 14
         draw.text((bx+12, by+300), "Enter=equip/use  d=drop  i/q=close", fill=(139,148,158), font=font_small)
+
+    # damage flash (screen edge)
+    if time.time() < game.flash_until:
+        draw.rectangle([0, 0, img_w-1, 5], fill=RGB["trap"])
+        draw.rectangle([0, img_h-6, img_w-1, img_h-1], fill=RGB["trap"])
+        draw.rectangle([0, 0, 5, img_h-1], fill=RGB["trap"])
+        draw.rectangle([img_w-6, 0, img_w-1, img_h-1], fill=RGB["trap"])
+
+    # event banner over the map
+    if game.banner and time.time() < game.banner[1]:
+        text = game.banner[0]
+        tw = draw.textlength(text, font=font_big)
+        bx = ox + (MAP_TILES_W*TILE - tw)/2
+        by = oy + MAP_TILES_H*TILE//2 - 20
+        draw.rectangle([bx-10, by-6, bx+tw+10, by+22], fill=(0,0,0))
+        draw.rectangle([bx-10, by-6, bx+tw+10, by-4], fill=RGB["title"])
+        draw.rectangle([bx-10, by+20, bx+tw+10, by+22], fill=RGB["title"])
+        draw.text((bx, by), text, fill=RGB["title"], font=font_big)
 
     # game over overlay
     if game.game_over:
@@ -1249,9 +1491,15 @@ def main_kitty():
             game.auto = True
         while True:
             game.game_over = False
+            last_tick = time.time()
+            last_action = time.time()
             while not game.game_over:
+                now = time.time()
+                if now - last_tick >= 0.5:
+                    game.tick()
+                    last_tick = now
                 game.draw()
-                r,_,_ = select.select([fd], [], [], 0.12 if game.auto else None)
+                r,_,_ = select.select([fd], [], [], 0.1)
                 if r:
                     key = read_key(fd)
                     if key == ord('A'):
@@ -1263,8 +1511,9 @@ def main_kitty():
                     res = game.handle_input(key)
                     if res == "quit":
                         return
-                elif game.auto:
+                elif game.auto and now - last_action >= 0.3:
                     game.auto_step()
+                    last_action = now
             game.draw()
             if game.auto:
                 time.sleep(2)
@@ -1362,7 +1611,9 @@ def title_screen(stdscr):
         "p = potion   f = eat   r = scroll   i = inventory",
         "c = stats   x = search   > = descend   S = save   L = load   A = auto   q = quit",
         "",
-        "Reach floor 15 to escape. Bosses every 5 floors.",
+        "Reach floor 15 and slay what guards the exit.",
+        "Bosses on floors 5, 10, 15 block the stairs.",
+        "Locked doors need keys; find them before the way is shut.",
         "",
         "Press any key to begin...",
     ]

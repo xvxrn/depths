@@ -23,10 +23,12 @@ or `depths`.
 - `x` search, `>` descend, `S` save, `L` load, `A` auto, `q` quit
 
 ## Features
-- 15 floors, bosses every 5, escape on 15
-- 12+ enemy types, mimics, ranged enemies, necromancers
-- Equipment, inventory, wands, traps, secret doors
-- Hunger, food, keys, gold, save/load
+- 15 floors; named bosses on 5, 10, 15 that block the stairs until slain
+- 13 enemy types with names, speeds (fast bats, slow trolls/golems), alert memory and BFS pathfinding
+- Locked doors + keys, mimics, ranged enemies, necromancers, traps, secret doors
+- Equipment, inventory, wands, targeted fireball scrolls
+- Hunger with slow regen while well-fed, food, gold, save/load
+- Damage flash, event banners, item memory on the map
 - Auto-pilot (heuristic AI + BFS pathfinding)
 
 ## Stack
