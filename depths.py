@@ -281,7 +281,7 @@ class Game:
         for e in self.entities:
             if e["hp"]>0 and e["x"]==nx and e["y"]==ny:
                 self.attack(e)
-                self.end_turn()
+                self.compute_fov()
                 return
         for it in self.items:
             if it["x"]==nx and it["y"]==ny:
@@ -298,14 +298,16 @@ class Game:
             self.floor += 1
             self.msg(f"You descend to floor {self.floor}.")
             self.new_floor()
-            self.end_turn()
+            self.compute_fov()
             return
         self.player["x"], self.player["y"] = nx, ny
-        self.end_turn()
+        self.reveal_secrets()
+        self.compute_fov()
 
-    def end_turn(self):
-        self.player["hunger"] += 1
-        if self.player["hunger"] >= 40 and self.player["hunger"] % 10 == 0:
+    def tick(self):
+        # real-time enemy turn + hunger
+        self.player["hunger"] += 0.2
+        if self.player["hunger"] >= 40 and int(self.player["hunger"]) % 10 == 0 and self.player["hunger"] % 1 < 0.25:
             self.player["hp"] = max(1, self.player["hp"]-1)
             self.msg("You are starving.")
         self.enemy_turn()
@@ -449,7 +451,7 @@ class Game:
         heal = random.randint(10, 16) + self.player["level"]
         self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+heal)
         self.msg(f"You drink a potion. +{heal} HP.")
-        self.end_turn()
+        self.compute_fov()
 
     def eat_food(self):
         if self.player["food"] <= 0:
@@ -458,7 +460,7 @@ class Game:
         self.player["hunger"] = max(0, self.player["hunger"]-30)
         self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+4)
         self.msg("You eat. Hunger -30, +4 HP.")
-        self.end_turn()
+        self.compute_fov()
 
     def use_scroll(self):
         if self.player["scrolls"] <= 0:
@@ -484,10 +486,11 @@ class Game:
             if tiles:
                 self.player["x"], self.player["y"] = random.choice(tiles)
                 self.msg("You teleport.")
+                self.compute_fov()
         else:
             self.player["hp"] = self.player["maxhp"]
             self.msg("Full heal.")
-        self.end_turn()
+        self.compute_fov()
 
     def use_wand(self, inv_item):
         cnt = 0
@@ -501,7 +504,7 @@ class Game:
                         self.player["xp"] += e.get("xp",3); self.check_level()
         self.msg(f"Wand hits {cnt} enemies.")
         self.player["inventory"] = [i for i in self.player["inventory"] if i is not inv_item]
-        self.end_turn()
+        self.compute_fov()
 
     def check_level(self):
         need = self.player["level"] * 12
@@ -524,7 +527,7 @@ class Game:
                 if 0<=x<self.mw and 0<=y<self.mh and self.grid[y][x]==4:
                     self.grid[y][x] = 2; found += 1
         self.msg(f"You find {found} secret door(s)." if found else "Nothing found.")
-        self.end_turn()
+        self.compute_fov()
 
     def open_inventory(self):
         self.inventory_open = True
@@ -1228,9 +1231,15 @@ def main_sixel():
             game.auto = True
         while True:
             game.game_over = False
+            last_tick = time.time()
+            last_action = time.time()
             while not game.game_over:
+                now = time.time()
+                if now - last_tick >= 0.5:
+                    game.tick()
+                    last_tick = now
                 game.draw()
-                r,_,_ = select.select([fd], [], [], 0.12 if game.auto else None)
+                r,_,_ = select.select([fd], [], [], 0.05)
                 if r:
                     key = read_key(fd)
                     if key == ord('A'):
@@ -1242,8 +1251,9 @@ def main_sixel():
                     res = game.handle_input(key)
                     if res == "quit":
                         return
-                elif game.auto:
+                elif game.auto and now - last_action >= 0.3:
                     game.auto_step()
+                    last_action = now
             game.draw()
             if game.auto:
                 time.sleep(2)
@@ -1324,13 +1334,19 @@ def main(stdscr):
     stdscr.keypad(True)
     init_colors()
     title_screen(stdscr)
-    stdscr.timeout(100)
+    stdscr.timeout(50)
     while True:
         game = Game(stdscr=stdscr)
         if "--auto" in sys.argv:
             game.auto = True
         game.game_over = False
+        last_tick = time.time()
+        last_action = time.time()
         while not game.game_over:
+            now = time.time()
+            if now - last_tick >= 0.5:
+                game.tick()
+                last_tick = now
             game.draw()
             key = stdscr.getch()
             if key != -1:
@@ -1342,12 +1358,12 @@ def main(stdscr):
                 if res == "quit":
                     stdscr.timeout(-1)
                     return
-            elif game.auto:
+            elif game.auto and now - last_action >= 0.3:
                 game.auto_step()
-                time.sleep(0.12)
+                last_action = now
         stdscr.timeout(-1)
         action = game_over_screen(stdscr, game)
-        stdscr.timeout(100)
+        stdscr.timeout(50)
         if action == "quit":
             stdscr.timeout(-1)
             return
