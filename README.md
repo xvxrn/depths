@@ -1,6 +1,9 @@
 # depths
 
-A terminal roguelike with pixel-style rendering. Procedural dungeons, permadeath, no dependencies beyond curses (stdlib).
+A roguelike. Two rendering modes:
+
+- **Kitty (pixels):** if run inside the kitty terminal, the game renders as a true pixel image via the Kitty graphics protocol (PIL + PNG). Web-quality graphics in the terminal.
+- **Fallback (solid cells):** in other terminals, tiles are solid colored cells (256-color background). Still readable.
 
 ## Play
 ```
@@ -19,8 +22,5 @@ or `depths` if installed.
 - Equipment, inventory, wands, traps, secret doors
 - Hunger, food, keys, gold, save/load
 
-## Rendering
-Tiles are rendered as solid colored cells (block pixels) using background colors, for a pixel-art look in the terminal. Requires a terminal with 256-color support.
-
 ## Stack
-Python 3.14, stdlib only (`curses`). Single file.
+Python 3.14, stdlib + Pillow (PIL) for kitty mode. Single file.
