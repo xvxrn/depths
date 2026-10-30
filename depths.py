@@ -541,8 +541,12 @@ class Game:
                     self.player["weapon"] = item
                 elif slot == "armor":
                     if self.player["armor"]:
+                        self.player["maxhp"] -= self.player["armor"].get("hp",0)
+                        self.player["hp"] = min(self.player["hp"], self.player["maxhp"])
                         self.player["inventory"].append({"ch":"[","name":self.player["armor"].get("name","armor"),"item":self.player["armor"],"kind":"equip"})
                     self.player["armor"] = item
+                    self.player["maxhp"] += item.get("hp",0)
+                    self.player["hp"] = min(self.player["hp"]+item.get("hp",0), self.player["maxhp"])
                 elif slot == "ring":
                     if self.player["ring"]:
                         self.player["inventory"].append({"ch":"=","name":self.player["ring"].get("name","ring"),"item":self.player["ring"],"kind":"equip"})
