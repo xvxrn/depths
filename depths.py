@@ -955,19 +955,43 @@ def _draw_frame(game):
             rx = ox + e["x"]*TILE
             ry = oy + e["y"]*TILE
             c = enemy_color.get(e["ch"], (239,68,68))
-            draw.rectangle([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
+            cx = rx + TILE//2; cy = ry + TILE//2
+            ch = e["ch"]
+            if ch in ("g","r"):
+                draw.ellipse([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
+            elif ch in ("o","V"):
+                draw.ellipse([rx+2, ry+2, rx+TILE-3, ry+TILE-3], fill=c)
+                draw.ellipse([rx+6, ry+6, rx+TILE-7, ry+TILE-7], fill=(0,0,0))
+            elif ch in ("T","G","D","m"):
+                draw.rectangle([rx+2, ry+2, rx+TILE-3, ry+TILE-3], fill=c, outline=(0,0,0))
+            elif ch in ("s",):
+                pts = [(cx, ry+2), (rx+TILE-3, cy), (cx, ry+TILE-3), (rx+2, cy)]
+                draw.polygon(pts, fill=c)
+            elif ch in ("b",):
+                pts = [(cx, ry+4), (rx+TILE-5, cy), (cx, ry+TILE-5), (rx+4, cy)]
+                draw.polygon(pts, fill=c)
+            elif ch in ("W",):
+                draw.ellipse([rx+3, ry+2, rx+TILE-4, ry+TILE-5], fill=c)
+                draw.polygon([(rx+3, ry+TILE-5), (cx, ry+TILE-2), (rx+TILE-4, ry+TILE-5)], fill=c)
+            elif ch in ("a",):
+                pts = [(rx+3, ry+3), (rx+TILE-3, cy), (rx+3, ry+TILE-3)]
+                draw.polygon(pts, fill=c)
+            elif ch in ("n",):
+                draw.ellipse([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
+            else:
+                draw.rectangle([rx+3, ry+3, rx+TILE-4, ry+TILE-4], fill=c)
             # hp bar
             pct = e["hp"]/e["maxhp"]
             draw.rectangle([rx+3, ry+1, rx+TILE-4, ry+3], fill=(0,0,0))
             draw.rectangle([rx+3, ry+1, rx+3+int((TILE-7)*pct), ry+3], fill=RGB["hp"])
-            draw.text((rx+TILE//2-4, ry+TILE//2-6), e["ch"], fill=(255,255,255), font=font_big)
+            draw.text((rx+TILE//2-4, ry+TILE//2-7), e["ch"], fill=(255,255,255), font=font_big)
 
     # player
     px = ox + game.player["x"]*TILE
     py = oy + game.player["y"]*TILE
-    draw.rectangle([px+2, py+2, px+TILE-3, py+TILE-3], fill=RGB["player"])
-    draw.rectangle([px+7, py+8, px+9, py+10], fill=RGB["playerEye"])
-    draw.rectangle([px+13, py+8, px+15, py+10], fill=RGB["playerEye"])
+    draw.ellipse([px+2, py+2, px+TILE-3, py+TILE-3], fill=RGB["player"])
+    draw.ellipse([px+7, py+7, px+10, py+10], fill=RGB["playerEye"])
+    draw.ellipse([px+13, py+7, px+16, py+10], fill=RGB["playerEye"])
     ppct = game.player["hp"]/game.player["maxhp"]
     draw.rectangle([px+2, py+1, px+TILE-3, py+3], fill=(0,0,0))
     draw.rectangle([px+2, py+1, px+2+int((TILE-5)*ppct), py+3], fill=RGB["hp"])
@@ -999,13 +1023,13 @@ def _draw_frame(game):
     ]
     for l in lines:
         draw.text((sx, sy), l, fill=RGB["text"], font=font)
-        sy += 16
+        sy += 20
     sy += 6
     draw.text((sx, sy), "Log", fill=RGB["title"], font=font)
     sy += 16
     for m in game.messages[-10:]:
         draw.text((sx, sy), m[:34], fill=RGB["text"], font=font_small)
-        sy += 13
+        sy += 16
     sy += 6
     draw.text((sx, sy), "Inventory (I)", fill=RGB["title"], font=font)
     sy += 16
@@ -1155,8 +1179,12 @@ def render_sixel(game):
     send_sixel(img)
 
 _cell_size_cache = None
+_terminal_pixels_cache = None
 def get_terminal_pixels():
-    """Query terminal text area size in pixels (CSI 14 t)."""
+    """Query terminal text area size in pixels (CSI 14 t). Cached."""
+    global _terminal_pixels_cache
+    if _terminal_pixels_cache is not None:
+        return _terminal_pixels_cache
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -1178,11 +1206,13 @@ def get_terminal_pixels():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     m = re.search(r'\x1b\[4;(\d+);(\d+)t', buf)
     if m:
-        return int(m.group(2)), int(m.group(1))
+        _terminal_pixels_cache = (int(m.group(2)), int(m.group(1)))
+        return _terminal_pixels_cache
     cell_w, cell_h = get_cell_size()
     import shutil
     ts = shutil.get_terminal_size((80, 24))
-    return ts.columns * cell_w, ts.lines * cell_h
+    _terminal_pixels_cache = (ts.columns * cell_w, ts.lines * cell_h)
+    return _terminal_pixels_cache
 
 def get_cell_size_cached():
     global _cell_size_cache
