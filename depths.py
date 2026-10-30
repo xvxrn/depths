@@ -1467,11 +1467,20 @@ def detect_sixel():
     return ";4;" in buf or ";4c" in buf or "4;" in buf
 
 if __name__ == "__main__":
-    if os.environ.get("KITTY_WINDOW_ID"):
-        os.environ["DEPTHS_RENDER"] = "kitty"
-        main_kitty()
-    elif "--sixel" in sys.argv or (sys.stdin.isatty() and _safe_detect_sixel()):
-        os.environ["DEPTHS_RENDER"] = "sixel"
-        main_sixel()
-    else:
-        curses.wrapper(main)
+    try:
+        if os.environ.get("KITTY_WINDOW_ID"):
+            os.environ["DEPTHS_RENDER"] = "kitty"
+            main_kitty()
+        elif "--sixel" in sys.argv or (sys.stdin.isatty() and _safe_detect_sixel()):
+            os.environ["DEPTHS_RENDER"] = "sixel"
+            main_sixel()
+        else:
+            curses.wrapper(main)
+    except KeyboardInterrupt:
+        # clean exit
+        try:
+            sys.stdout.write("\x1b[?1049l\x1b[?25h")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        sys.exit(0)
