@@ -29,6 +29,10 @@ def init_colors():
         curses.init_pair(hash(name) % 200 + 1, code, -1)
     for name in COLORS:
         setattr(Color, name, hash(name) % 200 + 1)
+    # backgrounds for tile colors (fg, bg)
+    curses.init_pair(getattr(Color, "floor"), 250, 236)
+    curses.init_pair(getattr(Color, "wall"), 239, 234)
+    curses.init_pair(getattr(Color, "player"), 46, 236)
 
 class Color: pass
 
@@ -687,15 +691,17 @@ class Game:
                 if t.get("triggered"):
                     self.stdscr.addstr(t["y"], t["x"], t["ch"], cp("trap"))
         # items
+        ITEM_GLYPH = {"!":"!","*":"%","/":")","[":"]","$":"$","?":"?","=":"=","(":"/","k":"k"}
         for it in self.items:
             if (it["x"],it["y"]) in self.visible:
                 col = {"!":"potion","*":"food","/":"weapon","[":"armor","$":"gold","?":"scroll","=":"ring","(":"wand","k":"key"}[it["ch"]]
-                self.stdscr.addstr(it["y"], it["x"], it["ch"], cp(col))
+                self.stdscr.addstr(it["y"], it["x"], ITEM_GLYPH[it["ch"]], cp(col))
         # mimics disguised: show as item char
         for e in self.entities:
             if e["hp"]>0 and e.get("disguise") and (e["x"],e["y"]) in self.visible:
+                ITEM_GLYPH = {"!":"!","*":"%","/":")","[":"]","$":"$","?":"?","=":"=","(":"/"}
                 col = {"!":"potion","*":"food","/":"weapon","[":"armor","$":"gold","?":"scroll","=":"ring","(":"wand"}[e["disguise"]]
-                self.stdscr.addstr(e["y"], e["x"], e["disguise"], cp(col))
+                self.stdscr.addstr(e["y"], e["x"], ITEM_GLYPH[e["disguise"]], cp(col))
         # enemies
         for e in self.entities:
             if e["hp"]>0 and not e.get("disguise") and (e["x"],e["y"]) in self.visible:
@@ -709,7 +715,7 @@ class Game:
         status = (f" Fl{self.floor} {biome(self.floor)}  {hp_bar}  ATK {self.total_atk()}  DEF {self.total_def()}  "
                   f"LVL {p['level']}  XP {p['xp']}/{p['level']*12}  Gold {p['gold']}  Food {p['food']}  "
                   f"Hng {p['hunger']}  Pot {p['potions']}  Scr {p['scrolls']}  Keys {p['keys']} ")
-        self.stdscr.addstr(sy, 0, ("─"*(self.w-1)), cp("dim"))
+        self.stdscr.addstr(sy, 0, ("-"*(self.w-1)), cp("dim"))
         self.stdscr.addstr(sy+1, 0, status[:self.w-1], cp("text"))
         for i, m in enumerate(self.messages[-2:]):
             self.stdscr.addstr(sy+2+i, 0, m[:self.w-1], cp("msg"))
@@ -727,7 +733,7 @@ class Game:
         sy = (h - box_h)//2
         for yy in range(sy, sy+box_h):
             self.stdscr.addstr(yy, sx, " "*box_w, cp("inv"))
-        self.stdscr.addstr(sy, sx, "─"*box_w, cp("inv"))
+        self.stdscr.addstr(sy, sx, "-"*box_w, cp("inv"))
         self.stdscr.addstr(sy, sx+2, " INVENTORY ", cp("inv") | curses.A_BOLD)
         # equipment
         eq = self.player
