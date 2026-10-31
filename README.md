@@ -1,6 +1,6 @@
 # depths
 
-A terminal roguelike. Pure Python stdlib — zero third-party dependencies.
+A roguelike with pixel rendering in the terminal. Stdlib + Pillow.
 
 ## Run
 
@@ -10,8 +10,13 @@ python3 -m depths --auto     # auto-pilot plays itself
 ./play.sh                    # same as python3 -m depths
 ```
 
-Renders with curses: colored cells, works in any terminal, 256-color or
-better recommended.
+## Rendering modes (auto-detected)
+- **Kitty** (KITTY_WINDOW_ID set): true pixels via Kitty graphics protocol.
+- **Sixel** (terminal supports sixel, or `--sixel`): true pixels via sixel.
+- **Fallback**: colored cells (curses), works in any terminal.
+
+Pixel modes render full-screen with sprites, damage numbers and event
+banners; one main loop drives both backends.
 
 ## Controls
 - Move: arrows / WASD / hjkl; diagonals: yubn
@@ -41,14 +46,15 @@ Single package, pure stdlib:
 | Module | Role |
 |--------|------|
 | `depths/constants.py` | chars, colors, enemy/boss/item tables |
-| `depths/terminal.py`  | curses color setup |
+| `depths/terminal.py`  | curses colors, terminal pixel queries, raw input |
+| `depths/render.py`    | PIL frame drawing, Kitty/sixel senders |
 | `depths/dungeon.py`   | dungeon generation, entity placement |
 | `depths/game.py`      | `Game` — all rules, curses drawing, auto-pilot |
 | `depths/scores.py`    | high scores |
-| `depths/app.py`       | the main loop and screens |
+| `depths/app.py`       | one main loop, curses/pixel backends, screens |
 
 `AGENTS.md` documents the schema and conventions; `.agents/skills/depths-game`
 has a skill for coding agents.
 
 ## Stack
-Python 3 (stdlib only). Developed on 3.14.
+Python 3, stdlib + Pillow (only for pixel modes). Developed on 3.14.

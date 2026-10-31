@@ -14,7 +14,7 @@ There is no test framework. Verify headless (no TTY needed):
 
 ```python
 import random
-from depths import Game
+from depths import Game, render, terminal
 
 random.seed(0)
 g = Game(mw=40, mh=25)          # full ruleset, no curses needed
@@ -23,6 +23,10 @@ for _ in range(200):            # real-time simulation
     if g.game_over:
         break
     g.auto_step()               # or g.move_player(dx, dy)
+
+# pixel frame preview (kitty/sixel path) without a terminal:
+terminal._terminal_pixels_cache = (1280, 800)
+img = render._draw_frame(g)     # PIL Image; save and view it
 ```
 
 Then `python3 -m py_compile depths/*.py`. Run the real game with
@@ -43,8 +47,11 @@ Then `python3 -m py_compile depths/*.py`. Run the real game with
 
 ## Pitfalls
 
-- Real-time `tick` runs in `app.main` and must pause for
+- Real-time `tick` runs in `app.play` and must pause for
   inventory/shop/help overlays — see "Gotchas" in AGENTS.md.
+- Damage numbers / projectiles / beams are the `Game.add_fx` system, drawn
+  only by the pixel renderer; curses mode ignores them.
 - `Game.player` is serialized to JSON — keep `setdefault` on load for any
   new player field.
 - Use `app._put` for screens text; raw `addstr` crashes on small terminals.
+- Kitty sender needs `C=1` and a trailing `\x1b[H` or the screen scrolls.

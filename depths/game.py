@@ -1,10 +1,11 @@
 """Game state and rules: player, enemies, items, combat, FOV, save/load."""
-import curses, json, math, random, time
+import curses, json, math, os, random, time
 from collections import deque
 
 from .constants import BOSSES, PLAYER, SHOP_GOODS, SAVE, ename, cap
 from .dungeon import biome, make_dungeon, place_entities
 from .terminal import Color, cp
+from .render import render_kitty, render_sixel
 
 
 class Game:
@@ -36,9 +37,12 @@ class Game:
         self.starve_acc = 0
         self.hungry_warned = False
         self.banner = None       # (text, expiry time)
+        self.flash_until = 0.0   # red screen edge on player damage
         self.merchant = None
         self.shop_open = False
         self.shop_cursor = 0
+        self.effects = []        # transient visuals: dmg numbers, projectiles...
+        self._draw_t = 0.0
         self.hints_shown = set()
         self.killer = None       # what finished the run, for the death recap
         self.help_open = False
@@ -81,6 +85,8 @@ class Game:
         self.player["y"] = ry + rh//2
         self.entities, self.items, self.traps, self.merchant = place_entities(
             self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
+        for e in self.entities + [self.player]:
+            e.pop("rx", None); e.pop("ry", None)
         self.msg(f"--- Floor {self.floor}: {biome(self.floor)} ---", "sys")
         boss = BOSSES.get(self.floor)
         if boss:
@@ -234,8 +240,11 @@ class Game:
             self.msg("Critical hit!")
         e["hp"] -= dmg
         self.msg(f"You hit {ename(e)} for {dmg}.")
+        self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7,
+                    color=(255,90,70) if crit else (255,255,255))
         if e["hp"] <= 0:
             e["hp"] = 0
+            self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
             self.msg(f"{cap(ename(e))} dies!", "sys")
             if e.get("boss"):
                 self.msg("The way to the stairs is clear.", "sys")
@@ -278,6 +287,8 @@ class Game:
                 e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
             self.killer = ename(e)
             p["hp"] -= dmg
+            self.flash_until = time.time() + 0.25
+            self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
             if p["hp"] <= 0:
                 p["hp"] = 0
                 self.game_over = True
@@ -286,8 +297,11 @@ class Game:
         if e["ch"] == "a" and sees and 2 <= dist <= 6:
             if random.random() < 0.6:
                 dmg = max(1, e["atk"] - self.total_def() + random.randint(0, 1))
+                self.add_fx("proj", x0=ex, y0=ey, x1=px, y1=py, life=0.22, color=(249,115,22))
                 self.killer = ename(e)
                 p["hp"] -= dmg
+                self.flash_until = time.time() + 0.25
+                self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
                 self.msg(f"{cap(ename(e))} shoots you for {dmg}.", "danger")
                 if p["hp"] <= 0:
                     p["hp"] = 0; self.game_over = True
@@ -402,6 +416,7 @@ class Game:
         self.player["potions"] -= 1
         heal = random.randint(10, 16) + self.player["level"]
         self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+heal)
+        self.add_fx("dmg", x=self.player["x"], y=self.player["y"], txt=f"+{heal}", life=0.7, color=(63,185,80))
         self.msg(f"You drink a potion. +{heal} HP.")
         self.compute_fov()
 
@@ -435,13 +450,17 @@ class Game:
                        if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
             targets.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
             t = targets[0]
+            self.add_fx("boom", x=t["x"], y=t["y"], life=0.45)
+            self.msg("A fireball erupts!")
             for e in list(targets):
                 d = abs(e["x"]-t["x"]) + abs(e["y"]-t["y"])
                 if d <= 1:
                     dmg = 14 if d == 0 else 7
                     e["hp"] -= dmg
+                    self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7, color=(255,140,0))
                     if e["hp"] <= 0:
                         e["hp"] = 0
+                        self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
                         self.msg(f"{cap(ename(e))} dies!", "sys")
                         self.player["xp"] += e.get("xp", 3)
                         self.check_level()
@@ -462,9 +481,13 @@ class Game:
             if e["hp"]>0 and (e["x"],e["y"]) in self.visible:
                 d = abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"])
                 if d <= 5 and self.line_of_sight(self.player["x"],self.player["y"],e["x"],e["y"]):
+                    self.add_fx("beam", x0=self.player["x"], y0=self.player["y"],
+                                x1=e["x"], y1=e["y"], life=0.3)
+                    self.add_fx("dmg", x=e["x"], y=e["y"], txt="15", life=0.7, color=(196,181,253))
                     e["hp"] -= 15; cnt += 1
                     if e["hp"]<=0:
                         e["hp"]=0
+                        self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
                         self.msg(f"{cap(ename(e))} dies!", "sys")
                         self.player["xp"] += e.get("xp",3); self.check_level()
         self.msg(f"The wand zaps {cnt} enemies.")
@@ -501,6 +524,13 @@ class Game:
 
     def close_inventory(self):
         self.inventory_open = False
+
+    def add_fx(self, kind, **kw):
+        kw["kind"] = kind
+        kw["t"] = time.time()
+        self.effects.append(kw)
+        if len(self.effects) > 200:
+            self.effects = self.effects[-200:]
 
     def merchant_adjacent(self):
         m = self.merchant
@@ -678,6 +708,8 @@ class Game:
         self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
         self.entities, self.items, self.traps, self.merchant = place_entities(
             self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
+        for e in self.entities + [self.player]:
+            e.pop("rx", None); e.pop("ry", None)
         if self.grid[self.player["y"]][self.player["x"]] not in (1, 2, 3):
             rx, ry, rw, rh = rooms[0]
             self.player["x"], self.player["y"] = rx + rw//2, ry + rh//2
@@ -803,7 +835,12 @@ class Game:
                 self.move_player(dx, dy); return
 
     def draw(self):
-        if self.stdscr is not None:
+        if self.stdscr is None:
+            if os.environ.get("DEPTHS_RENDER") == "sixel":
+                render_sixel(self)
+            else:
+                render_kitty(self)
+        else:
             self.draw_curses()
 
     def draw_curses(self):

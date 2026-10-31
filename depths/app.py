@@ -1,9 +1,13 @@
-"""Curses main loop, screens, entry point."""
-import curses, sys, time
+"""One main loop, two I/O backends: pixel (kitty/sixel) and curses cells."""
+import curses, os, select, sys, termios, time, tty
 
+from .constants import MAP_TILES_W, MAP_TILES_H
 from .game import Game
+from .render import render_kitty, render_sixel
 from .scores import record_score
-from .terminal import Color, cp, init_colors
+from .terminal import Color, cp, init_colors, read_key, _safe_detect_sixel
+
+OVERLAYS_OPEN = lambda game: game.inventory_open or game.shop_open or game.help_open
 
 
 def _put(stdscr, y, x, text, attr):
@@ -55,7 +59,8 @@ def game_over_screen(stdscr, game):
     h, w = stdscr.getmaxyx()
     title = "VICTORY!" if getattr(game, "victory", False) else "GAME OVER"
     color = Color.xp if getattr(game, "victory", False) else Color.hp
-    stdscr.addstr(h//2 - 8, max(0, w//2 - len(title)//2), title, curses.color_pair(color) | curses.A_BOLD)
+    _put(stdscr, h//2 - 8, max(0, w//2 - len(title)//2), title,
+         curses.color_pair(color) | curses.A_BOLD)
     stats = [
         "You escaped the depths!" if getattr(game, "victory", False)
         else (f"Slain by {game.killer}." if getattr(game, "killer", None) else "You died in the depths."),
@@ -82,54 +87,124 @@ def game_over_screen(stdscr, game):
         if k in (ord('q'), 27): return "quit"
 
 
-def main(stdscr):
-    try:
-        curses.curs_set(0)
-    except Exception:
+class CursesBackend:
+    """Cells renderer, input via getch."""
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+
+    def new_game(self):
+        return Game(stdscr=self.stdscr)
+
+    def setup(self):
+        try:
+            curses.curs_set(0)
+        except Exception:
+            pass
+        self.stdscr.keypad(True)
+        init_colors()
+        title_screen(self.stdscr)
+
+    def draw(self, game):
+        game.draw_curses()
+
+    def get_key(self, timeout):
+        self.stdscr.timeout(int(timeout * 1000))
+        k = self.stdscr.getch()
+        self.stdscr.timeout(-1)
+        return None if k == -1 else k
+
+    def game_over(self, game):
+        return game_over_screen(self.stdscr, game)
+
+    def teardown(self):
         pass
-    stdscr.nodelay(False)
-    stdscr.keypad(True)
-    init_colors()
-    title_screen(stdscr)
-    stdscr.timeout(50)
-    while True:
-        game = Game(stdscr=stdscr)
-        if "--auto" in sys.argv:
-            game.auto = True
-        game.game_over = False
-        last_tick = time.time()
-        last_action = time.time()
-        while not game.game_over:
-            now = time.time()
-            if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
-                game.tick()
-                last_tick = now
-            game.draw()
-            key = stdscr.getch()
-            if key != -1:
-                if key == ord('A'):
-                    game.auto = not game.auto
-                    game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
-                    continue
-                res = game.handle_input(key)
-                if res == "quit":
-                    stdscr.timeout(-1)
-                    return
-            elif game.auto and now - last_action >= 0.3:
-                game.auto_step()
-                last_action = now
-        stdscr.timeout(-1)
-        action = game_over_screen(stdscr, game)
-        stdscr.timeout(50)
-        if action == "quit":
-            stdscr.timeout(-1)
-            return
-        if game.auto:
-            continue
+
+
+class PixelBackend:
+    """Full-frame pixel renderer (kitty or sixel), raw tty input."""
+    def __init__(self, renderer):
+        self.renderer = renderer
+        self.fd = sys.stdin.fileno()
+
+    def new_game(self):
+        return Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
+
+    def setup(self):
+        self.old_attr = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        if self.renderer is render_sixel:
+            sys.stdout.write("\x1b[?1049h\x1b[?25l")
+            sys.stdout.flush()
+
+    def draw(self, game):
+        self.renderer(game)
+
+    def get_key(self, timeout):
+        r, _, _ = select.select([self.fd], [], [], timeout)
+        return read_key(self.fd) if r else None
+
+    def game_over(self, game):
+        game.draw()
+        while True:
+            k = self.get_key(None)
+            if k == ord('r'):
+                return "retry"
+            if k in (ord('q'), 27):
+                return "quit"
+
+    def teardown(self):
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_attr)
+        sys.stdout.write("\x1b[?1049l\x1b[?25h")
+        sys.stdout.flush()
+
+
+def play(backend):
+    """The single main loop for every backend."""
+    backend.setup()
+    try:
+        while True:
+            game = backend.new_game()
+            if "--auto" in sys.argv:
+                game.auto = True
+            last_tick = last_action = time.time()
+            while not game.game_over:
+                now = time.time()
+                if now - last_tick >= 0.5 and not OVERLAYS_OPEN(game):
+                    game.tick()
+                    last_tick = now
+                backend.draw(game)
+                key = backend.get_key(0.1)
+                if key is not None:
+                    if key == ord('A'):
+                        game.auto = not game.auto
+                        game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
+                        continue
+                    res = game.handle_input(key)
+                    if res == "quit":
+                        return
+                elif game.auto and now - last_action >= 0.3:
+                    game.auto_step()
+                    last_action = now
+            game.record_score()
+            if game.auto:
+                backend.draw(game)
+                time.sleep(2)
+                continue
+            if backend.game_over(game) == "quit":
+                return
+    finally:
+        backend.teardown()
 
 
 def run():
     try:
-        curses.wrapper(main)
+        if os.environ.get("KITTY_WINDOW_ID"):
+            os.environ["DEPTHS_RENDER"] = "kitty"
+            play(PixelBackend(render_kitty))
+        elif "--sixel" in sys.argv or (sys.stdin.isatty() and _safe_detect_sixel()):
+            os.environ["DEPTHS_RENDER"] = "sixel"
+            play(PixelBackend(render_sixel))
+        else:
+            curses.wrapper(lambda stdscr: play(CursesBackend(stdscr)))
     except KeyboardInterrupt:
         sys.exit(0)
