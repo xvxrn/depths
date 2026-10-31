@@ -31,6 +31,9 @@ or `depths`.
 - Hunger with slow regen while well-fed, food, gold, save/load
 - Juice: floating damage numbers, arrows/beams/explosions, smooth movement,
   damage flash, event banners, item memory on the map, top-5 high scores
+- Readability: goal + stairs compass in the HUD, colored log, contextual
+  tutorial hints, "slain by ..." death recap, inventory stat comparison,
+  help screen on ?
 - Auto-pilot (heuristic AI + BFS pathfinding)
 
 ## Stack

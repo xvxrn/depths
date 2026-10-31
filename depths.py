@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """depths — a terminal roguelike. Pixel rendering via Kitty protocol (fallback: solid cells)."""
-import curses, random, os, json, sys, base64, io, re, select, tty, termios, time
+import curses, random, os, json, sys, base64, io, re, select, tty, termios, time, math
 
 SAVE = os.path.expanduser("~/.depths_save.json")
 HIGH = os.path.expanduser("~/.depths_high.json")
@@ -332,10 +332,40 @@ class Game:
         self.shop_cursor = 0
         self.effects = []        # transient visuals: dmg numbers, projectiles...
         self._draw_t = 0.0
+        self.hints_shown = set()
+        self.killer = None       # what finished the run, for the death recap
+        self.help_open = False
         self.new_floor()
+        self.hint("move", "Arrows/WASD to move. Press ? for help.")
 
     def set_banner(self, text, secs=2.5):
         self.banner = (text, time.time() + secs)
+
+    def hint(self, key, text):
+        """One-shot contextual tutorial hint."""
+        if key in self.hints_shown:
+            return
+        self.hints_shown.add(key)
+        self.msg(text, "hint")
+        self.set_banner(text, 2.5)
+
+    def stairs_pos(self):
+        for y in range(self.mh):
+            for x in range(self.mw):
+                if self.grid[y][x] == 3:
+                    return (x, y)
+        return None
+
+    def item_delta(self, inv_item):
+        """Stat change if this inventory item replaces the equipped one."""
+        item = inv_item["item"]
+        if item["type"] == "weapon":
+            cur = self.player["weapon"].get("atk", 0) if self.player["weapon"] else 0
+            return item.get("atk", 0) - cur
+        if item["type"] == "armor":
+            cur = self.player["armor"].get("def", 0) if self.player["armor"] else 0
+            return item.get("def", 0) - cur
+        return None
 
     def new_floor(self):
         self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
@@ -346,10 +376,10 @@ class Game:
             self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
         for e in self.entities + [self.player]:
             e.pop("rx", None); e.pop("ry", None)
-        self.messages.append(f"--- Floor {self.floor}: {biome(self.floor)} ---")
+        self.msg(f"--- Floor {self.floor}: {biome(self.floor)} ---", "sys")
         boss = BOSSES.get(self.floor)
         if boss:
-            self.msg(f"{cap(boss['name'])} lurks on this floor!")
+            self.msg(f"{cap(boss['name'])} lurks on this floor!", "sys")
             self.set_banner(f"BOSS: {cap(boss['name'])}", 3.0)
         self.compute_fov()
 
@@ -382,8 +412,8 @@ class Game:
             if e2 < dx:
                 err += dx; y += sy
 
-    def msg(self, text):
-        self.messages.append(text)
+    def msg(self, text, kind="info"):
+        self.messages.append({"t": text, "k": kind})
         if len(self.messages) > 8:
             self.messages = self.messages[-8:]
 
@@ -412,13 +442,14 @@ class Game:
             if self.player["keys"] > 0:
                 self.player["keys"] -= 1
                 self.grid[ny][nx] = 2
-                self.msg("You unlock the door.")
+                self.msg("You unlock the door.", "sys")
             else:
-                self.msg("The door is locked. You need a key.")
+                self.msg("The door is locked. You need a key.", "sys")
+                self.hint("locked", "Locked doors need a key. Look for keys on the floor.")
                 return
         if cell == 4:
             self.grid[ny][nx] = 2
-            self.msg("You found a secret door!")
+            self.msg("You found a secret door!", "sys")
         m = self.merchant
         if m and nx == m["x"] and ny == m["y"]:
             self.msg("The merchant greets you. (v to trade)")
@@ -436,10 +467,15 @@ class Game:
             if t["x"]==nx and t["y"]==ny and not t.get("triggered"):
                 self.trigger_trap(t)
         if self.grid[ny][nx] == 3:
-            self.msg("You stand on the stairs. Press > to descend.")
+            self.msg("You stand on the stairs. Press > to descend.", "sys")
         self.player["x"], self.player["y"] = nx, ny
+        if self.merchant_adjacent():
+            self.hint("trade", "Press v to trade with the merchant.")
         self.reveal_secrets()
         self.compute_fov()
+        sp = self.stairs_pos()
+        if sp and sp in self.visible:
+            self.hint("stairs", "Stand on > and press > to descend.")
 
     def tick(self):
         # real-time enemy turn + hunger + regen
@@ -451,7 +487,8 @@ class Game:
             if self.starve_acc >= 25:  # ~12s of real time per starvation point
                 self.starve_acc = 0
                 p["hp"] -= 1
-                self.msg("You are starving!")
+                self.killer = "starvation"
+                self.msg("You are starving!", "danger")
                 if p["hp"] <= 0:
                     p["hp"] = 0
                     self.game_over = True
@@ -467,6 +504,8 @@ class Game:
                     and not any(e["hp"] > 0 and abs(e["x"]-p["x"]) + abs(e["y"]-p["y"]) <= 2
                                 for e in self.entities)):
                 p["hp"] += 1
+        if p["hp"] < p["maxhp"] * 0.4 and p["potions"] > 0:
+            self.hint("lowhp", "Low HP! Press p to drink a potion.")
         self.enemy_turn()
         self.reveal_secrets()
         self.compute_fov()
@@ -479,7 +518,7 @@ class Game:
                 if 0 <= x < self.mw and 0 <= y < self.mh and self.grid[y][x] == 4:
                     if random.random() < 0.25:
                         self.grid[y][x] = 2
-                        self.msg("You notice a secret door.")
+                        self.msg("You notice a secret door.", "sys")
 
     def attack(self, e):
         patk = self.total_atk()
@@ -495,9 +534,9 @@ class Game:
         if e["hp"] <= 0:
             e["hp"] = 0
             self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
-            self.msg(f"{cap(ename(e))} dies!")
+            self.msg(f"{cap(ename(e))} dies!", "sys")
             if e.get("boss"):
-                self.msg("The way to the stairs is clear.")
+                self.msg("The way to the stairs is clear.", "sys")
                 self.set_banner(f"{cap(ename(e))} is slain!", 3.0)
             self.player["xp"] += e.get("xp", 3)
             if random.random() < 0.4:
@@ -530,30 +569,32 @@ class Game:
             dmg = max(1, e["atk"] - self.total_def() + random.randint(-1, 1))
             if random.random() < 0.05:
                 dmg = int(dmg * 1.7)
-                self.msg(f"{cap(ename(e))} lands a brutal blow for {dmg}!")
+                self.msg(f"{cap(ename(e))} lands a brutal blow for {dmg}!", "danger")
             else:
-                self.msg(f"{cap(ename(e))} hits you for {dmg}.")
+                self.msg(f"{cap(ename(e))} hits you for {dmg}.", "danger")
             if e["ch"] == "V":
                 e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
+            self.killer = ename(e)
             p["hp"] -= dmg
             self.flash_until = time.time() + 0.25
             self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
             if p["hp"] <= 0:
                 p["hp"] = 0
                 self.game_over = True
-                self.msg(f"You were slain by {ename(e)}.")
+                self.msg(f"You were slain by {ename(e)}.", "danger")
             return
         if e["ch"] == "a" and sees and 2 <= dist <= 6:
             if random.random() < 0.6:
                 dmg = max(1, e["atk"] - self.total_def() + random.randint(0, 1))
                 self.add_fx("proj", x0=ex, y0=ey, x1=px, y1=py, life=0.22, color=(249,115,22))
+                self.killer = ename(e)
                 p["hp"] -= dmg
                 self.flash_until = time.time() + 0.25
                 self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
-                self.msg(f"{cap(ename(e))} shoots you for {dmg}.")
+                self.msg(f"{cap(ename(e))} shoots you for {dmg}.", "danger")
                 if p["hp"] <= 0:
                     p["hp"] = 0; self.game_over = True
-                    self.msg(f"You were shot by {ename(e)}.")
+                    self.msg(f"You were shot by {ename(e)}.", "danger")
             return
         if e["ch"] == "n" and sees and random.random() < 0.25:
             for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
@@ -562,7 +603,7 @@ class Game:
                         and not any(o["x"] == nx and o["y"] == ny and o["hp"] > 0 for o in self.entities):
                     self.entities.append({"ch": "s", "x": nx, "y": ny, "hp": 8, "maxhp": 8,
                                           "atk": 3, "name": "s", "xp": 4})
-                    self.msg("The necromancer summons a skeleton!")
+                    self.msg("The necromancer summons a skeleton!", "danger")
                     break
         # movement
         if e.get("boss") or e.get("alert"):
@@ -599,11 +640,12 @@ class Game:
         if ch == "^":
             dmg = random.randint(3, 8) + self.floor//2
             self.player["hp"] -= dmg
-            self.msg(f"A spike trap hits you for {dmg}!")
+            self.killer = "the spike trap"
+            self.msg(f"A spike trap hits you for {dmg}!", "danger")
         elif ch == "~":
             self.player["hp"] = max(1, self.player["hp"]-4)
             self.player["hunger"] += 20
-            self.msg("Poison! HP -4, hunger +20.")
+            self.msg("Poison! HP -4, hunger +20.", "danger")
         elif ch == "@":
             tiles = [(x,y) for y in range(self.mh) for x in range(self.mw) if self.grid[y][x]==1 and (x,y)!=(self.player["x"],self.player["y"])]
             if tiles:
@@ -616,7 +658,7 @@ class Game:
                     if 0<=nx<self.mw and 0<=ny<self.mh and self.grid[ny][nx]==1 and not any(o["x"]==nx and o["y"]==ny and o["hp"]>0 for o in self.entities):
                         self.entities.append({"ch":"g","x":nx,"y":ny,"hp":6,"maxhp":6,"atk":2,"name":"g","xp":3})
                         break
-            self.msg("Alarm! Enemies appear.")
+            self.msg("Alarm! Enemies appear.", "danger")
         if self.player["hp"] <= 0:
             self.player["hp"]=0; self.game_over=True
 
@@ -624,34 +666,38 @@ class Game:
         ch = it["ch"]
         if ch == "!":
             self.player["potions"] += 1
-            self.msg("You pick up a health potion.")
+            self.msg("You pick up a health potion.", "loot")
+            self.hint("potion", "Press p to drink a potion.")
         elif ch == "*":
             self.player["food"] += 1
-            self.msg("You pick up food.")
+            self.msg("You pick up food.", "loot")
+            self.hint("eat", "Press f to eat when hungry.")
         elif ch == "/":
             wname = f"weapon (+{2+self.floor//3} ATK)"
             self.player["inventory"].append({"ch":"/","name":wname,"item":{"type":"weapon","atk":2+self.floor//3,"name":wname},"kind":"equip"})
-            self.msg("You find a weapon. (i to equip)")
+            self.msg("You find a weapon. (i to equip)", "loot")
+            self.hint("equip", "Press i to open inventory and equip.")
         elif ch == "[":
             aname = f"armor (+{1+self.floor//4} DEF)"
             self.player["inventory"].append({"ch":"[","name":aname,"item":{"type":"armor","def":1+self.floor//4,"hp":2+self.floor//2,"name":aname},"kind":"equip"})
-            self.msg("You find armor.")
+            self.msg("You find armor.", "loot")
         elif ch == "$":
             amt = random.randint(5, 20) + self.floor*2
             self.player["gold"] += amt
-            self.msg(f"You find {amt} gold.")
+            self.msg(f"You find {amt} gold.", "loot")
         elif ch == "?":
             self.player["scrolls"] += 1
-            self.msg("You find a scroll.")
+            self.msg("You find a scroll.", "loot")
+            self.hint("scroll", "Press r to read a scroll.")
         elif ch == "=":
             self.player["inventory"].append({"ch":"=","name":"ring (+1 ATK/DEF)","item":{"type":"ring","atk":1,"def":1,"name":"ring (+1 ATK/DEF)"},"kind":"equip"})
-            self.msg("You find a ring.")
+            self.msg("You find a ring.", "loot")
         elif ch == "w":
             self.player["inventory"].append({"ch":"w","name":"wand (fireball)","item":{"type":"wand"},"kind":"wand"})
-            self.msg("You find a wand.")
+            self.msg("You find a wand.", "loot")
         elif ch == "k":
             self.player["keys"] += 1
-            self.msg("You pick up a key.")
+            self.msg("You pick up a key.", "loot")
 
     def use_potion(self):
         if self.player["potions"] <= 0:
@@ -704,7 +750,7 @@ class Game:
                     if e["hp"] <= 0:
                         e["hp"] = 0
                         self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
-                        self.msg(f"{cap(ename(e))} dies!")
+                        self.msg(f"{cap(ename(e))} dies!", "sys")
                         self.player["xp"] += e.get("xp", 3)
                         self.check_level()
         elif effect == "teleport":
@@ -731,7 +777,7 @@ class Game:
                     if e["hp"]<=0:
                         e["hp"]=0
                         self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
-                        self.msg(f"{cap(ename(e))} dies!")
+                        self.msg(f"{cap(ename(e))} dies!", "sys")
                         self.player["xp"] += e.get("xp",3); self.check_level()
         self.msg(f"The wand zaps {cnt} enemies.")
         self.player["inventory"] = [i for i in self.player["inventory"] if i is not inv_item]
@@ -746,7 +792,7 @@ class Game:
             self.player["hp"] = self.player["maxhp"]
             self.player["atk"] += 1
             self.player["def"] += 1
-            self.msg(f"Level up! You are level {self.player['level']}.")
+            self.msg(f"Level up! You are level {self.player['level']}.", "sys")
             self.set_banner("LEVEL UP!", 1.5)
             need = self.player["level"] * 12
 
@@ -872,6 +918,9 @@ class Game:
                     self.inv_cursor = max(0, len(inv)-1)
 
     def handle_input(self, key):
+        if self.help_open:
+            self.help_open = False
+            return
         if self.shop_open:
             self.shop_action(key)
             return
@@ -883,6 +932,9 @@ class Game:
         if key == ord('A'):
             self.auto = not self.auto
             self.msg("Auto-pilot: " + ("ON" if self.auto else "OFF"))
+            return
+        if key == ord('?'):
+            self.help_open = True
             return
         if key in (curses.KEY_UP, ord('k'), ord('w')): self.move_player(0,-1)
         elif key in (curses.KEY_DOWN, ord('j'), ord('s')): self.move_player(0,1)
@@ -922,10 +974,10 @@ class Game:
                 return
             if self.floor >= 15:
                 self.victory = True; self.game_over = True
-                self.msg("You escaped the depths!")
+                self.msg("You escaped the depths!", "sys")
                 return
             self.floor += 1
-            self.msg(f"You descend to floor {self.floor}.")
+            self.msg(f"You descend to floor {self.floor}.", "sys")
             self.new_floor()
 
     def load_game(self):
@@ -941,7 +993,7 @@ class Game:
                      ("inventory",[]),("weapon",None),("armor",None),("ring",None)):
             self.player.setdefault(k, v)
         self.explored = set(tuple(t) for t in data["explored"])
-        self.messages = data.get("messages", [])
+        self.messages = [{"t": t, "k": "info"} for t in data.get("messages", [])]
         self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
         self.entities, self.items, self.traps, self.merchant = place_entities(
             self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
@@ -952,7 +1004,7 @@ class Game:
             self.player["x"], self.player["y"] = rx + rw//2, ry + rh//2
         self.game_over = False
         self.victory = False
-        self.msg("Game loaded.")
+        self.msg("Game loaded.", "sys")
         self.compute_fov()
 
     def char_sheet(self):
@@ -965,9 +1017,9 @@ class Game:
         try:
             json.dump({"floor":self.floor,"player":self.player,
                        "explored":[list(t) for t in self.explored],
-                       "messages":self.messages[-5:]},
+                       "messages":[m["t"] for m in self.messages[-5:]]},
                       open(SAVE,"w"))
-            self.msg("Game saved.")
+            self.msg("Game saved.", "sys")
         except Exception as e:
             self.msg(f"Save failed: {e}")
 
@@ -1012,9 +1064,10 @@ class Game:
     def auto_step(self):
         if self.game_over:
             return
-        if self.inventory_open or self.shop_open:
+        if self.inventory_open or self.shop_open or self.help_open:
             self.close_inventory()
             self.shop_open = False
+            self.help_open = False
             return
         # heal
         if self.player["hp"] < self.player["maxhp"] * 0.35 and self.player["potions"] > 0:
@@ -1126,18 +1179,57 @@ class Game:
         sy = self.mh
         p = self.player
         hp_bar = f"HP:{p['hp']}/{p['maxhp']}"
-        status = (f" Fl{self.floor} {biome(self.floor)}  {hp_bar}  ATK {self.total_atk()}  DEF {self.total_def()}  "
+        sp = self.stairs_pos()
+        if sp and sp in self.explored:
+            ddx, ddy = sp[0]-p["x"], sp[1]-p["y"]
+            ang = ("E","SE","S","SW","W","NW","N","NE")[
+                int(((math.degrees(math.atan2(ddy, ddx)) % 360) + 22.5) // 45) % 8]
+            stairs_txt = f"{ang}:{abs(ddx)+abs(ddy)}"
+        else:
+            stairs_txt = "?"
+        status = (f" Fl{self.floor}/15 {biome(self.floor)}  {hp_bar}  stairs {stairs_txt}  "
+                  f"ATK {self.total_atk()}  DEF {self.total_def()}  "
                   f"LVL {p['level']}  XP {p['xp']}/{p['level']*12}  Gold {p['gold']}  Food {p['food']}  "
                   f"Hng {p['hunger']}  Pot {p['potions']}  Scr {p['scrolls']}  Keys {p['keys']} ")
         self.stdscr.addstr(sy, 0, ("-"*(self.mw-1)), cp("dim"))
         self.stdscr.addstr(sy+1, 0, status[:self.mw-1], cp("text"))
+        msg_col = {"info": "text", "danger": "hp", "loot": "gold", "sys": "title", "hint": "player"}
         for i, m in enumerate(self.messages[-2:]):
-            self.stdscr.addstr(sy+2+i, 0, m[:self.mw-1], cp("msg"))
+            self.stdscr.addstr(sy+2+i, 0, m["t"][:self.mw-1], cp(msg_col.get(m["k"], "text")))
         if self.inventory_open:
             self.draw_inventory_curses()
         if self.shop_open:
             self.draw_shop_curses()
+        if self.help_open:
+            self.draw_help_curses()
         self.stdscr.refresh()
+
+    def draw_help_curses(self):
+        h, w = self.stdscr.getmaxyx()
+        box_w = min(64, w-4)
+        box_h = min(16, h-4)
+        sx = (w - box_w)//2
+        sy = (h - box_h)//2
+        for yy in range(sy, sy+box_h):
+            self.stdscr.addstr(yy, sx, " "*box_w, cp("inv"))
+        self.stdscr.addstr(sy, sx, "-"*box_w, cp("inv"))
+        self.stdscr.addstr(sy, sx+2, " HELP ", cp("inv"))
+        lines = [
+            "Goal: descend 15 floors. Slay the boss guarding the stairs.",
+            "Locked doors need keys. Mimics look like items.",
+            "Stand on > and press > to descend.",
+            "",
+            "Move: arrows / WASD / hjkl, diagonals yubn",
+            "p potion  f eat  r scroll  i inventory  v trade",
+            "x search  c stats  S save  L load  A auto",
+            "? this help   q quit",
+            "",
+            "Press any key to close.",
+        ]
+        y = sy+1
+        for l in lines:
+            if y >= sy+box_h-1: break
+            self.stdscr.addstr(y, sx+1, l[:box_w-2], cp("text")); y += 1
 
     def draw_shop_curses(self):
         h, w = self.stdscr.getmaxyx()
@@ -1181,8 +1273,17 @@ class Game:
         for i, it in enumerate(inv):
             if y >= sy+box_h-2: break
             mark = ">" if i == self.inv_cursor else " "
-            attr = cp("equip") if i == self.inv_cursor else cp("text")
-            self.stdscr.addstr(y, sx+1, f"{mark} {it['name']}"[:box_w-2], attr)
+            d = self.item_delta(it)
+            if i == self.inv_cursor:
+                attr = cp("equip")
+            elif d is not None and d > 0:
+                attr = cp("player")
+            elif d is not None and d < 0:
+                attr = cp("hp")
+            else:
+                attr = cp("text")
+            extra = f" ({d:+d})" if d is not None and d != 0 else ""
+            self.stdscr.addstr(y, sx+1, f"{mark} {it['name']}{extra}"[:box_w-2], attr)
             y += 1
         if not inv and y < sy+box_h-2:
             self.stdscr.addstr(y, sx+1, "(empty)", cp("dim")); y+=1
@@ -1511,7 +1612,7 @@ def _draw_frame(game):
     sy += 20
     p = game.player
     lines = [
-        f"Floor {game.floor}  {biome(game.floor)}",
+        f"Floor {game.floor}/15  {biome(game.floor)}",
         f"HP {p['hp']}/{p['maxhp']}",
         f"ATK {game.total_atk()}  DEF {game.total_def()}",
         f"Level {p['level']}  XP {p['xp']}/{p['level']*12}",
@@ -1520,6 +1621,14 @@ def _draw_frame(game):
         f"Potions {p['potions']}  Scrolls {p['scrolls']}",
         f"Keys {p['keys']}",
     ]
+    near = [e for e in game.entities
+            if e["hp"] > 0 and not e.get("disguise") and (e["x"], e["y"]) in game.visible]
+    if near:
+        near.sort(key=lambda e: abs(e["x"]-p["x"]) + abs(e["y"]-p["y"]))
+        e0 = near[0]
+        lines.append(f"Near: {cap(ename(e0))} {e0['hp']}/{e0['maxhp']}")
+    else:
+        lines.append("No enemies in sight")
     boss = next((e for e in game.entities if e.get("boss") and e["hp"] > 0), None)
     if boss:
         lines.append(f"{cap(ename(boss))}")
@@ -1527,13 +1636,35 @@ def _draw_frame(game):
     if game.merchant and game.merchant_adjacent():
         lines.append("v: trade with merchant")
     for l in lines:
-        draw.text((sx, sy), l, fill=RGB["text"], font=font)
+        col = RGB["text"]
+        if l.startswith("Near:"):
+            col = RGB["trap"]
+        elif l == "No enemies in sight":
+            col = (110, 116, 124)
+        draw.text((sx, sy), l, fill=col, font=font)
         sy += 20
+    # compass to the stairs (the current goal)
+    sp = game.stairs_pos()
+    if sp and sp in game.explored:
+        ddx, ddy = sp[0]-p["x"], sp[1]-p["y"]
+        dist = abs(ddx) + abs(ddy)
+        draw.text((sx, sy), f"Stairs: {dist} steps", fill=RGB["stairs"], font=font)
+        ang = math.atan2(ddy, ddx)
+        acx, acy = sx + 130, sy + 7
+        tip = (acx + 8*math.cos(ang), acy + 8*math.sin(ang))
+        bax, bay = acx - 5*math.cos(ang), acy - 5*math.sin(ang)
+        nx_, ny_ = -math.sin(ang), math.cos(ang)
+        draw.polygon([tip, (bax+5*nx_, bay+5*ny_), (bax-5*nx_, bay-5*ny_)], fill=RGB["stairs"])
+    else:
+        draw.text((sx, sy), "Stairs: explore to find", fill=(139,148,158), font=font)
+    sy += 20
     sy += 6
     draw.text((sx, sy), "Log", fill=RGB["title"], font=font)
     sy += 16
+    log_col = {"info": RGB["text"], "danger": RGB["trap"], "loot": RGB["gold"],
+               "sys": RGB["title"], "hint": RGB["player"]}
     for m in game.messages[-10:]:
-        draw.text((sx, sy), m[:34], fill=RGB["text"], font=font_small)
+        draw.text((sx, sy), m["t"][:34], fill=log_col.get(m["k"], RGB["text"]), font=font_small)
         sy += 16
     sy += 6
     draw.text((sx, sy), "Inventory (I)", fill=RGB["title"], font=font)
@@ -1541,7 +1672,17 @@ def _draw_frame(game):
     if game.inventory_open:
         for i, it in enumerate(game.player["inventory"][:12]):
             mark = ">" if i == game.inv_cursor else " "
-            draw.text((sx, sy), f"{mark} {it['name'][:28]}", fill=RGB["text"], font=font_small)
+            d = game.item_delta(it)
+            if i == game.inv_cursor:
+                col = RGB["title"]
+            elif d is not None and d > 0:
+                col = RGB["player"]
+            elif d is not None and d < 0:
+                col = RGB["trap"]
+            else:
+                col = RGB["text"]
+            extra = f" ({d:+d})" if d is not None and d != 0 else ""
+            draw.text((sx, sy), f"{mark} {it['name'][:26]}{extra}", fill=col, font=font_small)
             sy += 13
         if not game.player["inventory"]:
             draw.text((sx, sy), "(empty)", fill=(139,148,158), font=font_small)
@@ -1623,12 +1764,42 @@ def _draw_frame(game):
             y += 24
         draw.text((bx+12, by+300), "Enter=buy   v/Esc=close", fill=(139,148,158), font=font_small)
 
+    # help overlay
+    if game.help_open:
+        bx = (img_w - 480)//2
+        by = (img_h - 300)//2
+        draw.rectangle([bx, by, bx+480, by+300], fill=RGB["panel"])
+        draw.rectangle([bx, by, bx+480, by+2], fill=RGB["title"])
+        draw.text((bx+12, by+8), "HELP", fill=RGB["title"], font=font_big)
+        hl = [
+            ("GOAL: descend 15 floors.", RGB["stairs"]),
+            ("Slay the boss guarding the stairs on boss floors.", RGB["stairs"]),
+            ("Locked doors need keys. Mimics look like items.", RGB["text"]),
+            ("Follow the compass to the stairs.", RGB["text"]),
+            ("", None),
+            ("Move: arrows / WASD / hjkl, diagonals yubn", RGB["text"]),
+            ("p potion   f eat   r scroll   i inventory", RGB["text"]),
+            ("v trade    x search  > descend   c stats", RGB["text"]),
+            ("S save     L load   A auto-pilot   ? help   q quit", RGB["text"]),
+            ("", None),
+            ("Press any key to close.", (139,148,158)),
+        ]
+        y = by + 40
+        for l, c in hl:
+            if c is not None:
+                draw.text((bx+12, y), l, fill=c, font=font)
+            y += 21
+
     # game over overlay
     if game.game_over:
         draw.rectangle([0, 0, img_w, img_h], fill=(0,0,0))
         title = "VICTORY!" if game.victory else "GAME OVER"
         col = RGB["hp"] if game.victory else RGB["trap"]
         draw.text((img_w//2-60, img_h//2-20), title, fill=col, font=font_big)
+        if not game.victory and game.killer:
+            kt = f"Slain by {game.killer}"
+            draw.text((img_w//2 - draw.textlength(kt, font=font)/2, img_h//2-2), kt,
+                      fill=(200,120,120), font=font)
         draw.text((img_w//2-120, img_h//2+10), f"Floor {game.floor}  Level {game.player['level']}  Gold {game.player['gold']}", fill=RGB["text"], font=font)
         draw.text((img_w//2-100, img_h//2+34), "Auto-restarts in auto mode" if game.auto else "Press r to retry, q to quit", fill=(139,148,158), font=font_small)
         scores = getattr(game, "_scores", None) or load_scores()
@@ -1813,7 +1984,7 @@ def main_kitty():
             last_action = time.time()
             while not game.game_over:
                 now = time.time()
-                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
+                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
                     game.tick()
                     last_tick = now
                 game.draw()
@@ -1871,7 +2042,7 @@ def main_sixel():
             last_action = time.time()
             while not game.game_over:
                 now = time.time()
-                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
+                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
                     game.tick()
                     last_tick = now
                 game.draw()
@@ -1930,7 +2101,7 @@ def title_screen(stdscr):
         "Move: arrows / WASD / hjkl   Diagonals: yubn",
         "p = potion   f = eat   r = scroll   i = inventory",
         "v = trade (stand next to the merchant)",
-        "c = stats   x = search   > = descend   S = save   L = load   A = auto   q = quit",
+        "c = stats   x = search   > = descend   S = save   L = load   A = auto   ? = help   q = quit",
         "",
         "Reach floor 15 and slay what guards the exit.",
         "Bosses on floors 5, 10, 15 block the stairs.",
@@ -1951,7 +2122,8 @@ def game_over_screen(stdscr, game):
     color = Color.xp if getattr(game, "victory", False) else Color.hp
     stdscr.addstr(h//2 - 8, max(0, w//2 - len(title)//2), title, curses.color_pair(color) | curses.A_BOLD)
     stats = [
-        "You escaped the depths!" if getattr(game, "victory", False) else "You died in the depths.",
+        "You escaped the depths!" if getattr(game, "victory", False)
+        else (f"Slain by {game.killer}." if getattr(game, "killer", None) else "You died in the depths."),
         f"Floor reached: {game.floor}",
         f"Level: {game.player['level']}",
         f"Gold: {game.player['gold']}",
@@ -1993,7 +2165,7 @@ def main(stdscr):
         last_action = time.time()
         while not game.game_over:
             now = time.time()
-            if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
+            if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
                 game.tick()
                 last_tick = now
             game.draw()
