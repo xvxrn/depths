@@ -27,8 +27,10 @@ or `depths`.
 - 13 enemy types with names, speeds (fast bats, slow trolls/golems), alert memory and BFS pathfinding
 - Locked doors + keys, mimics, ranged enemies, necromancers, traps, secret doors
 - Equipment, inventory, wands, targeted fireball scrolls
+- Merchant on floors 2+: spend gold on potions, scrolls, gear, max HP
 - Hunger with slow regen while well-fed, food, gold, save/load
-- Damage flash, event banners, item memory on the map
+- Juice: floating damage numbers, arrows/beams/explosions, smooth movement,
+  damage flash, event banners, item memory on the map, top-5 high scores
 - Auto-pilot (heuristic AI + BFS pathfinding)
 
 ## Stack

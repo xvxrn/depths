@@ -67,6 +67,45 @@ def ename(e):
 def cap(s):
     return s[0].upper() + s[1:] if s else s
 
+SHOP_GOODS = [
+    {"ch": "*", "name": "food",         "base": 10},
+    {"ch": "!", "name": "health potion","base": 15},
+    {"ch": "k", "name": "key",          "base": 20},
+    {"ch": "?", "name": "scroll",       "base": 25},
+    {"ch": "[", "name": "plate armor",  "base": 35},
+    {"ch": "/", "name": "steel weapon", "base": 40},
+    {"ch": "@", "name": "+10 max HP",   "base": 60},
+]
+
+def load_scores():
+    try:
+        with open(HIGH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def score_key(s):
+    return (1 if s.get("victory") else 0, s.get("floor", 0), s.get("level", 0), s.get("gold", 0))
+
+def record_score(game):
+    """Record a finished run once; returns the current top-5."""
+    if getattr(game, "_scored", False):
+        return getattr(game, "_scores", load_scores())
+    game._scored = True
+    entry = {"floor": game.floor, "level": game.player["level"], "gold": game.player["gold"],
+             "victory": bool(getattr(game, "victory", False)),
+             "date": time.strftime("%Y-%m-%d %H:%M")}
+    scores = load_scores()
+    scores.append(entry)
+    scores.sort(key=score_key, reverse=True)
+    scores = scores[:5]
+    try:
+        json.dump(scores, open(HIGH, "w"))
+    except Exception:
+        pass
+    game._scores = scores
+    return scores
+
 def init_colors():
     curses.start_color()
     try:
@@ -147,7 +186,7 @@ def make_dungeon(floor, width, height):
                         grid[y][x] = 4  # secret
     return grid, rooms
 
-def place_entities(grid, width, height, floor, player_pos):
+def place_entities(grid, width, height, floor, player_pos, rooms=None):
     entities = []
     items = []
     traps = []
@@ -238,6 +277,21 @@ def place_entities(grid, width, height, floor, player_pos):
             entities.append({"ch": boss["ch"], "x": spot[0], "y": spot[1],
                              "hp": boss["hp"], "maxhp": boss["hp"], "atk": boss["atk"],
                              "name": boss["name"], "xp": boss["xp"], "boss": True})
+    # merchant in a room away from the player's start
+    merchant = None
+    if floor >= 2 and rooms and len(rooms) > 1:
+        occ = occupied | {(t["x"], t["y"]) for t in traps}
+        cand_rooms = [r for r in rooms
+                      if not (r[0] <= player_pos[0] < r[0]+r[2] and r[1] <= player_pos[1] < r[1]+r[3])]
+        random.shuffle(cand_rooms)
+        for (rx, ry, rw, rh) in cand_rooms:
+            spots = [(x, y) for y in range(ry, ry+rh) for x in range(rx, rx+rw)
+                     if grid[y][x] == 1 and (x, y) not in occ]
+            if spots:
+                mx, my = random.choice(spots)
+                merchant = {"x": mx, "y": my}
+                break
+    return entities, items, traps, merchant
     if random.random() < 0.35 and idx < len(cands):
         x, y = cands[idx]; idx += 1
         items.append({"ch": "k", "x": x, "y": y})
@@ -273,6 +327,11 @@ class Game:
         self.hungry_warned = False
         self.banner = None       # (text, expiry time)
         self.flash_until = 0.0   # red screen edge on player damage
+        self.merchant = None
+        self.shop_open = False
+        self.shop_cursor = 0
+        self.effects = []        # transient visuals: dmg numbers, projectiles...
+        self._draw_t = 0.0
         self.new_floor()
 
     def set_banner(self, text, secs=2.5):
@@ -283,8 +342,10 @@ class Game:
         rx, ry, rw, rh = rooms[0]
         self.player["x"] = rx + rw//2
         self.player["y"] = ry + rh//2
-        self.entities, self.items, self.traps = place_entities(
-            self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]))
+        self.entities, self.items, self.traps, self.merchant = place_entities(
+            self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
+        for e in self.entities + [self.player]:
+            e.pop("rx", None); e.pop("ry", None)
         self.messages.append(f"--- Floor {self.floor}: {biome(self.floor)} ---")
         boss = BOSSES.get(self.floor)
         if boss:
@@ -358,6 +419,10 @@ class Game:
         if cell == 4:
             self.grid[ny][nx] = 2
             self.msg("You found a secret door!")
+        m = self.merchant
+        if m and nx == m["x"] and ny == m["y"]:
+            self.msg("The merchant greets you. (v to trade)")
+            return
         for e in self.entities:
             if e["hp"]>0 and e["x"]==nx and e["y"]==ny:
                 self.attack(e)
@@ -419,13 +484,17 @@ class Game:
     def attack(self, e):
         patk = self.total_atk()
         dmg = max(1, patk - 1 + random.randint(-1, 2))
-        if random.random() < 0.1:
+        crit = random.random() < 0.1
+        if crit:
             dmg = int(dmg * 1.8)
             self.msg("Critical hit!")
         e["hp"] -= dmg
         self.msg(f"You hit {ename(e)} for {dmg}.")
+        self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7,
+                    color=(255,90,70) if crit else (255,255,255))
         if e["hp"] <= 0:
             e["hp"] = 0
+            self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
             self.msg(f"{cap(ename(e))} dies!")
             if e.get("boss"):
                 self.msg("The way to the stairs is clear.")
@@ -468,6 +537,7 @@ class Game:
                 e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
             p["hp"] -= dmg
             self.flash_until = time.time() + 0.25
+            self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
             if p["hp"] <= 0:
                 p["hp"] = 0
                 self.game_over = True
@@ -476,8 +546,10 @@ class Game:
         if e["ch"] == "a" and sees and 2 <= dist <= 6:
             if random.random() < 0.6:
                 dmg = max(1, e["atk"] - self.total_def() + random.randint(0, 1))
+                self.add_fx("proj", x0=ex, y0=ey, x1=px, y1=py, life=0.22, color=(249,115,22))
                 p["hp"] -= dmg
                 self.flash_until = time.time() + 0.25
+                self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(239,68,68))
                 self.msg(f"{cap(ename(e))} shoots you for {dmg}.")
                 if p["hp"] <= 0:
                     p["hp"] = 0; self.game_over = True
@@ -587,6 +659,7 @@ class Game:
         self.player["potions"] -= 1
         heal = random.randint(10, 16) + self.player["level"]
         self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+heal)
+        self.add_fx("dmg", x=self.player["x"], y=self.player["y"], txt=f"+{heal}", life=0.7, color=(63,185,80))
         self.msg(f"You drink a potion. +{heal} HP.")
         self.compute_fov()
 
@@ -620,13 +693,17 @@ class Game:
                        if e["hp"] > 0 and (e["x"], e["y"]) in self.visible]
             targets.sort(key=lambda e: abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]))
             t = targets[0]
+            self.add_fx("boom", x=t["x"], y=t["y"], life=0.45)
             self.msg("A fireball erupts!")
             for e in list(targets):
                 d = abs(e["x"]-t["x"]) + abs(e["y"]-t["y"])
                 if d <= 1:
-                    e["hp"] -= 14 if d == 0 else 7
+                    dmg = 14 if d == 0 else 7
+                    e["hp"] -= dmg
+                    self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7, color=(255,140,0))
                     if e["hp"] <= 0:
                         e["hp"] = 0
+                        self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
                         self.msg(f"{cap(ename(e))} dies!")
                         self.player["xp"] += e.get("xp", 3)
                         self.check_level()
@@ -647,9 +724,14 @@ class Game:
             if e["hp"]>0 and (e["x"],e["y"]) in self.visible:
                 d = abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"])
                 if d <= 5 and self.line_of_sight(self.player["x"],self.player["y"],e["x"],e["y"]):
+                    self.add_fx("beam", x0=self.player["x"], y0=self.player["y"],
+                                x1=e["x"], y1=e["y"], life=0.3)
+                    self.add_fx("dmg", x=e["x"], y=e["y"], txt="15", life=0.7, color=(196,181,253))
                     e["hp"] -= 15; cnt += 1
                     if e["hp"]<=0:
-                        e["hp"]=0; self.msg(f"{cap(ename(e))} dies!")
+                        e["hp"]=0
+                        self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
+                        self.msg(f"{cap(ename(e))} dies!")
                         self.player["xp"] += e.get("xp",3); self.check_level()
         self.msg(f"The wand zaps {cnt} enemies.")
         self.player["inventory"] = [i for i in self.player["inventory"] if i is not inv_item]
@@ -665,6 +747,7 @@ class Game:
             self.player["atk"] += 1
             self.player["def"] += 1
             self.msg(f"Level up! You are level {self.player['level']}.")
+            self.set_banner("LEVEL UP!", 1.5)
             need = self.player["level"] * 12
 
     def search(self):
@@ -685,6 +768,82 @@ class Game:
     def close_inventory(self):
         self.inventory_open = False
 
+    def add_fx(self, kind, **kw):
+        kw["kind"] = kind
+        kw["t"] = time.time()
+        self.effects.append(kw)
+        if len(self.effects) > 200:
+            self.effects = self.effects[-200:]
+
+    def merchant_adjacent(self):
+        m = self.merchant
+        return bool(m) and abs(m["x"]-self.player["x"]) + abs(m["y"]-self.player["y"]) <= 1
+
+    def shop_price(self, g):
+        return g["base"] + self.floor * 3
+
+    def open_shop(self):
+        self.shop_open = True
+        self.shop_cursor = 0
+
+    def shop_action(self, key):
+        if key in (27, ord('v'), ord('q')):
+            self.shop_open = False
+            return
+        if key in (curses.KEY_UP, ord('k')):
+            self.shop_cursor = max(0, self.shop_cursor - 1)
+        elif key in (curses.KEY_DOWN, ord('j')):
+            self.shop_cursor = min(len(SHOP_GOODS)-1, self.shop_cursor + 1)
+        elif key in (10, 13):
+            self.shop_buy()
+
+    def shop_buy(self):
+        g = SHOP_GOODS[self.shop_cursor]
+        price = self.shop_price(g)
+        p = self.player
+        if p["gold"] < price:
+            self.msg("Not enough gold.")
+            return
+        ch = g["ch"]
+        if ch == "!":
+            p["potions"] += 1
+        elif ch == "?":
+            p["scrolls"] += 1
+        elif ch == "*":
+            p["food"] += 1
+        elif ch == "k":
+            p["keys"] += 1
+        elif ch == "/":
+            self.equip_item({"type": "weapon", "atk": 3+self.floor//2,
+                             "name": f"steel weapon (+{3+self.floor//2} ATK)"})
+        elif ch == "[":
+            self.equip_item({"type": "armor", "def": 2+self.floor//4, "hp": 4+self.floor//2,
+                             "name": f"plate armor (+{2+self.floor//4} DEF)"})
+        elif ch == "@":
+            p["maxhp"] += 10
+            p["hp"] += 10
+        p["gold"] -= price
+        self.msg(f"Bought {g['name']} for {price} gold.")
+
+    def equip_item(self, item):
+        slot = item["type"]
+        if slot == "weapon":
+            if self.player["weapon"]:
+                self.player["inventory"].append({"ch":"/","name":self.player["weapon"].get("name","weapon"),"item":self.player["weapon"],"kind":"equip"})
+            self.player["weapon"] = item
+        elif slot == "armor":
+            if self.player["armor"]:
+                self.player["maxhp"] -= self.player["armor"].get("hp",0)
+                self.player["hp"] = min(self.player["hp"], self.player["maxhp"])
+                self.player["inventory"].append({"ch":"[","name":self.player["armor"].get("name","armor"),"item":self.player["armor"],"kind":"equip"})
+            self.player["armor"] = item
+            self.player["maxhp"] += item.get("hp",0)
+            self.player["hp"] = min(self.player["hp"]+item.get("hp",0), self.player["maxhp"])
+        elif slot == "ring":
+            if self.player["ring"]:
+                self.player["inventory"].append({"ch":"=","name":self.player["ring"].get("name","ring"),"item":self.player["ring"],"kind":"equip"})
+            self.player["ring"] = item
+
     def inventory_action(self, key):
         inv = self.player["inventory"]
         if key in (27, ord('i'), ord('q')):
@@ -698,23 +857,7 @@ class Game:
             it = inv[self.inv_cursor]
             if it["kind"] == "equip":
                 item = it["item"]
-                slot = item["type"]
-                if slot == "weapon":
-                    if self.player["weapon"]:
-                        self.player["inventory"].append({"ch":"/","name":self.player["weapon"].get("name","weapon"),"item":self.player["weapon"],"kind":"equip"})
-                    self.player["weapon"] = item
-                elif slot == "armor":
-                    if self.player["armor"]:
-                        self.player["maxhp"] -= self.player["armor"].get("hp",0)
-                        self.player["hp"] = min(self.player["hp"], self.player["maxhp"])
-                        self.player["inventory"].append({"ch":"[","name":self.player["armor"].get("name","armor"),"item":self.player["armor"],"kind":"equip"})
-                    self.player["armor"] = item
-                    self.player["maxhp"] += item.get("hp",0)
-                    self.player["hp"] = min(self.player["hp"]+item.get("hp",0), self.player["maxhp"])
-                elif slot == "ring":
-                    if self.player["ring"]:
-                        self.player["inventory"].append({"ch":"=","name":self.player["ring"].get("name","ring"),"item":self.player["ring"],"kind":"equip"})
-                    self.player["ring"] = item
+                self.equip_item(item)
                 self.player["inventory"].remove(it)
                 self.msg(f"Equipped {item.get('name', item['type'])}.")
             elif it["kind"] == "wand":
@@ -729,6 +872,9 @@ class Game:
                     self.inv_cursor = max(0, len(inv)-1)
 
     def handle_input(self, key):
+        if self.shop_open:
+            self.shop_action(key)
+            return
         if self.inventory_open:
             self.inventory_action(key)
             return
@@ -750,6 +896,11 @@ class Game:
         elif key == ord('f'): self.eat_food()
         elif key == ord('r'): self.use_scroll()
         elif key == ord('i'): self.open_inventory()
+        elif key == ord('v'):
+            if self.merchant_adjacent():
+                self.open_shop()
+            else:
+                self.msg("No merchant nearby.")
         elif key == ord('c'): self.msg(self.char_sheet())
         elif key == ord('x'): self.search()
         elif key == ord('>'): self.move_stairs()
@@ -792,8 +943,10 @@ class Game:
         self.explored = set(tuple(t) for t in data["explored"])
         self.messages = data.get("messages", [])
         self.grid, rooms = make_dungeon(self.floor, self.mw, self.mh)
-        self.entities, self.items, self.traps = place_entities(
-            self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]))
+        self.entities, self.items, self.traps, self.merchant = place_entities(
+            self.grid, self.mw, self.mh, self.floor, (self.player["x"], self.player["y"]), rooms)
+        for e in self.entities + [self.player]:
+            e.pop("rx", None); e.pop("ry", None)
         if self.grid[self.player["y"]][self.player["x"]] not in (1, 2, 3):
             rx, ry, rw, rh = rooms[0]
             self.player["x"], self.player["y"] = rx + rw//2, ry + rh//2
@@ -859,8 +1012,9 @@ class Game:
     def auto_step(self):
         if self.game_over:
             return
-        if self.inventory_open:
+        if self.inventory_open or self.shop_open:
             self.close_inventory()
+            self.shop_open = False
             return
         # heal
         if self.player["hp"] < self.player["maxhp"] * 0.35 and self.player["potions"] > 0:
@@ -966,6 +1120,8 @@ class Game:
                 if e.get("boss"):
                     attr |= curses.A_BOLD
                 self.stdscr.addstr(e["y"], e["x"], e["ch"], attr)
+        if self.merchant and (self.merchant["x"], self.merchant["y"]) in self.visible:
+            self.stdscr.addstr(self.merchant["y"], self.merchant["x"], "M", cp("gold") | curses.A_BOLD)
         self.stdscr.addstr(self.player["y"], self.player["x"], PLAYER, cp("player"))
         sy = self.mh
         p = self.player
@@ -979,7 +1135,29 @@ class Game:
             self.stdscr.addstr(sy+2+i, 0, m[:self.mw-1], cp("msg"))
         if self.inventory_open:
             self.draw_inventory_curses()
+        if self.shop_open:
+            self.draw_shop_curses()
         self.stdscr.refresh()
+
+    def draw_shop_curses(self):
+        h, w = self.stdscr.getmaxyx()
+        box_w = min(50, w-4)
+        box_h = min(16, h-4)
+        sx = (w - box_w)//2
+        sy = (h - box_h)//2
+        for yy in range(sy, sy+box_h):
+            self.stdscr.addstr(yy, sx, " "*box_w, cp("gold"))
+        self.stdscr.addstr(sy, sx, "-"*box_w, cp("gold"))
+        self.stdscr.addstr(sy, sx+2, f" MERCHANT  Gold: {self.player['gold']} ", cp("gold"))
+        y = sy+1
+        for i, g in enumerate(SHOP_GOODS):
+            if y >= sy+box_h-2: break
+            price = self.shop_price(g)
+            mark = ">" if i == self.shop_cursor else " "
+            attr = cp("equip") if i == self.shop_cursor else cp("text")
+            self.stdscr.addstr(y, sx+1, f"{mark} {g['name'][:20]:<20} {price}g"[:box_w-2], attr)
+            y += 1
+        self.stdscr.addstr(sy+box_h-1, sx+1, "Enter=buy  v/q=close"[:box_w-2], cp("dim"))
 
     def draw_inventory_curses(self):
         inv = self.player["inventory"]
@@ -1067,6 +1245,51 @@ MAP_TILES_H = 25
 SIDE_W = 290
 PAD = 10
 
+def draw_item_glyph(draw, cx, cy, ch, col, u=1.0, dim=False):
+    """Distinguishable item glyph centered at (cx, cy); u scales with tile size."""
+    dark = (0, 0, 0)
+    if dim:
+        col = tuple(v//3 for v in col)
+    w = max(2, int(1.5*u))
+    if ch == "!":  # potion flask
+        draw.rectangle([cx-int(1.5*u), cy-int(6*u), cx+int(1.5*u), cy-int(2*u)], fill=col, outline=dark)
+        draw.ellipse([cx-int(4*u), cy-int(2*u), cx+int(4*u), cy+int(5*u)], fill=col, outline=dark)
+        draw.ellipse([cx-int(2*u), cy, cx-int(0), cy+int(2*u)], fill=(255,255,255))
+    elif ch == "/":  # sword
+        draw.line([(cx-int(4*u), cy+int(5*u)), (cx+int(4*u), cy-int(5*u))], fill=col, width=max(2, int(2*u)))
+        draw.line([(cx-int(2*u), cy-int(1*u)), (cx+int(2*u), cy+int(2*u))], fill=dark, width=1)
+        draw.ellipse([cx-int(6*u), cy+int(4*u), cx-int(3*u), cy+int(7*u)], fill=col, outline=dark)
+    elif ch == "[":  # shield
+        draw.polygon([(cx, cy-int(5*u)), (cx+int(4*u), cy-int(3*u)), (cx+int(4*u), cy+int(1*u)),
+                      (cx, cy+int(5*u)), (cx-int(4*u), cy+int(1*u)), (cx-int(4*u), cy-int(3*u))],
+                     fill=col, outline=dark)
+        draw.line([(cx, cy-int(3*u)), (cx, cy+int(3*u))], fill=dark, width=1)
+    elif ch == "$":  # coin stack
+        draw.ellipse([cx-int(4*u), cy, cx+int(4*u), cy+int(5*u)], fill=col, outline=dark)
+        draw.ellipse([cx-int(4*u), cy-int(4*u), cx+int(4*u), cy+int(1*u)], fill=col, outline=dark)
+        draw.line([(cx, cy-int(3*u)), (cx, cy)], fill=dark, width=1)
+    elif ch == "?":  # scroll
+        draw.rectangle([cx-int(4*u), cy-int(3*u), cx+int(4*u), cy+int(3*u)], fill=col, outline=dark)
+        draw.line([(cx-int(2*u), cy-2), (cx+int(2*u), cy-2)], fill=dark, width=1)
+        draw.line([(cx-int(2*u), cy+1), (cx+int(2*u), cy+1)], fill=dark, width=1)
+    elif ch == "*":  # apple
+        draw.ellipse([cx-int(4*u), cy-int(3*u), cx+int(4*u), cy+int(5*u)], fill=col, outline=dark)
+        draw.line([(cx, cy-int(3*u)), (cx+int(1*u), cy-int(5*u))], fill=(102,64,20), width=max(1, int(u)))
+        draw.ellipse([cx+u, cy-int(5*u), cx+int(3*u), cy-int(3*u)], fill=(102,64,20))
+    elif ch == "=":  # ring
+        draw.ellipse([cx-int(3*u), cy-int(1*u), cx+int(3*u), cy+int(5*u)], outline=col, width=w)
+        draw.ellipse([cx-int(1*u), cy-int(4*u), cx+int(1*u), cy-int(2*u)], fill=(255,80,200), outline=dark)
+    elif ch in ("(", "w"):  # wand
+        draw.line([(cx-int(3*u), cy+int(5*u)), (cx+int(2*u), cy-int(3*u))], fill=col, width=max(2, int(2*u)))
+        draw.ellipse([cx, cy-int(6*u), cx+int(3*u), cy-int(3*u)], fill=(255,255,255), outline=dark)
+    elif ch == "k":  # key
+        draw.ellipse([cx-int(5*u), cy-int(5*u), cx-int(1*u), cy-int(1*u)], outline=col, width=w)
+        draw.line([(cx-int(1*u), cy-int(1*u)), (cx+int(5*u), cy+int(5*u))], fill=col, width=w)
+        draw.line([(cx+int(5*u), cy+int(5*u)), (cx+int(3*u), cy+int(5*u))], fill=col, width=w)
+        draw.line([(cx+int(3*u), cy+int(3*u)), (cx+int(5*u), cy+int(3*u))], fill=col, width=max(1, int(u)))
+    else:
+        draw.ellipse([cx-int(4*u), cy-int(4*u), cx+int(4*u), cy+int(4*u)], fill=col, outline=dark)
+
 def _draw_frame(game):
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -1077,6 +1300,21 @@ def _draw_frame(game):
     TILE = max(8, min((img_w - SIDE_W - PAD*2)//MAP_TILES_W, (img_h - PAD*2)//MAP_TILES_H))
     img = Image.new('RGB', (img_w, img_h), RGB["bg"])
     draw = ImageDraw.Draw(img)
+    # smooth movement: ease render coords toward logical cell coords
+    now = time.time()
+    dt = min(0.1, now - game._draw_t) if game._draw_t else 0.016
+    game._draw_t = now
+    lerp = min(1.0, dt * 12)
+    for e in game.entities:
+        if "rx" not in e:
+            e["rx"], e["ry"] = float(e["x"]), float(e["y"])
+        e["rx"] += (e["x"] - e["rx"]) * lerp
+        e["ry"] += (e["y"] - e["ry"]) * lerp
+    pl = game.player
+    if "rx" not in pl:
+        pl["rx"], pl["ry"] = float(pl["x"]), float(pl["y"])
+    pl["rx"] += (pl["x"] - pl["rx"]) * lerp
+    pl["ry"] += (pl["y"] - pl["ry"]) * lerp
     # font
     font_path = None
     for p in ("/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-Regular.ttf",
@@ -1136,26 +1374,24 @@ def _draw_frame(game):
             continue
         key = (it["x"], it["y"])
         if key in game.visible:
-            c = item_colmap.get(it["ch"], (255,255,255))
+            dim = False
         elif key in game.explored:
-            c = tuple(v//3 for v in item_colmap.get(it["ch"], (255,255,255)))
+            dim = True
         else:
             continue
-        rx = ox + it["x"]*TILE + TILE//2
-        ry = oy + it["y"]*TILE + TILE//2
-        draw.ellipse([rx-5, ry-5, rx+5, ry+5], fill=c)
-        if key in game.visible:
-            draw.text((rx-3, ry-5), it["ch"], fill=(0,0,0), font=font_small)
+        cx = ox + it["x"]*TILE + TILE//2
+        cy = oy + it["y"]*TILE + TILE//2
+        draw_item_glyph(draw, cx, cy, it["ch"], item_colmap.get(it["ch"], (255,255,255)),
+                        u=TILE/16.0, dim=dim)
 
     # mimics
     for e in game.entities:
         if e["hp"]<=0 or not e.get("disguise"): continue
         if (e["x"],e["y"]) in game.visible and e["x"] < MAP_TILES_W and e["y"] < MAP_TILES_H:
-            rx = ox + e["x"]*TILE + TILE//2
-            ry = oy + e["y"]*TILE + TILE//2
             colmap = {"!":RGB["potion"],"*":RGB["food"],"/":RGB["weapon"],"[":RGB["armor"],"$":RGB["gold"],"?":RGB["scroll"],"=":RGB["ring"]}
-            c = colmap.get(e["disguise"], (255,255,255))
-            draw.ellipse([rx-5, ry-5, rx+5, ry+5], fill=c)
+            mcx = ox + int(round(e["rx"]*TILE)) + TILE//2
+            mcy = oy + int(round(e["ry"]*TILE)) + TILE//2
+            draw_item_glyph(draw, mcx, mcy, e["disguise"], colmap.get(e["disguise"], (255,255,255)), u=TILE/16.0)
 
     # enemies
     enemy_color = {"g":RGB["goblin"],"o":RGB["orc"],"T":RGB["troll"],"D":RGB["dragon"],"s":RGB["skeleton"],
@@ -1165,8 +1401,8 @@ def _draw_frame(game):
     for e in game.entities:
         if e["hp"]<=0 or e.get("disguise"): continue
         if (e["x"],e["y"]) in game.visible and e["x"] < MAP_TILES_W and e["y"] < MAP_TILES_H:
-            rx = ox + e["x"]*TILE
-            ry = oy + e["y"]*TILE
+            rx = ox + int(round(e["rx"]*TILE))
+            ry = oy + int(round(e["ry"]*TILE))
             c = enemy_color.get(e["ch"], (239,68,68))
             cx = rx + TILE//2; cy = ry + TILE//2
             ch = e["ch"]
@@ -1206,15 +1442,58 @@ def _draw_frame(game):
                 draw.rectangle([rx+3, ry+1, rx+3+int((TILE-7)*pct), ry+3], fill=RGB["hp"])
             draw.text((rx+TILE//2-4, ry+TILE//2-7), e["ch"], fill=(255,255,255), font=font_big)
 
+    # merchant
+    m = game.merchant
+    if m and (m["x"], m["y"]) in game.visible and m["x"] < MAP_TILES_W and m["y"] < MAP_TILES_H:
+        mrx = ox + m["x"]*TILE
+        mry = oy + m["y"]*TILE
+        mcx = mrx + TILE//2
+        draw.polygon([(mrx+2, mry+TILE-1), (mcx, mry+4), (mrx+TILE-2, mry+TILE-1)],
+                     fill=(196,148,58), outline=(0,0,0))
+        draw.ellipse([mcx-3, mry+1, mcx+3, mry+8], fill=(253,224,71), outline=(0,0,0))
+        draw.text((mrx+2, mry+TILE-9), "v", fill=(255,255,255), font=font_small)
+
     # player
-    px = ox + game.player["x"]*TILE
-    py = oy + game.player["y"]*TILE
+    px = ox + int(round(game.player["rx"]*TILE))
+    py = oy + int(round(game.player["ry"]*TILE))
     draw.ellipse([px+2, py+2, px+TILE-3, py+TILE-3], fill=RGB["player"])
     draw.ellipse([px+7, py+7, px+10, py+10], fill=RGB["playerEye"])
     draw.ellipse([px+13, py+7, px+16, py+10], fill=RGB["playerEye"])
     ppct = game.player["hp"]/game.player["maxhp"]
     draw.rectangle([px+2, py+1, px+TILE-3, py+3], fill=(0,0,0))
     draw.rectangle([px+2, py+1, px+2+int((TILE-5)*ppct), py+3], fill=RGB["hp"])
+
+    # transient effects: damage numbers, projectiles, beams, explosions, poofs
+    game.effects = [fx for fx in game.effects if now - fx["t"] < fx.get("life", 0.7)]
+    for fx in game.effects:
+        age = now - fx["t"]
+        prog = min(1.0, age / fx.get("life", 0.7))
+        def fade(c, p=prog):
+            return tuple(int(v * (1 - p)) for v in c)
+        if fx["kind"] == "dmg":
+            cx = ox + fx["x"]*TILE + TILE//2
+            cy = oy + fx["y"]*TILE + TILE//2 - int(age*18)
+            tw = draw.textlength(fx["txt"], font=font_big)
+            draw.text((cx - tw/2, cy), fx["txt"], fill=fade(fx["color"]), font=font_big)
+        elif fx["kind"] == "proj":
+            t0 = prog
+            cx = ox + int((fx["x0"] + (fx["x1"]-fx["x0"])*t0) * TILE) + TILE//2
+            cy = oy + int((fx["y0"] + (fx["y1"]-fx["y0"])*t0) * TILE) + TILE//2
+            draw.line([(cx-4, cy-4), (cx+4, cy+4)], fill=fx["color"], width=3)
+        elif fx["kind"] == "beam":
+            draw.line([(ox + fx["x0"]*TILE + TILE//2, oy + fx["y0"]*TILE + TILE//2),
+                       (ox + fx["x1"]*TILE + TILE//2, oy + fx["y1"]*TILE + TILE//2)],
+                      fill=fade(RGB["wand"]), width=2)
+        elif fx["kind"] == "boom":
+            r = int(TILE * (0.6 + prog*1.6))
+            cx = ox + fx["x"]*TILE + TILE//2
+            cy = oy + fx["y"]*TILE + TILE//2
+            draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=fade((255,140,0)), width=3)
+        elif fx["kind"] == "poof":
+            r = int(TILE * (0.3 + prog*0.8))
+            cx = ox + fx["x"]*TILE + TILE//2
+            cy = oy + fx["y"]*TILE + TILE//2
+            draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=fade((120,120,120)))
 
     # fog overlay for non-visible explored
     for y in range(MAP_TILES_H):
@@ -1245,6 +1524,8 @@ def _draw_frame(game):
     if boss:
         lines.append(f"{cap(ename(boss))}")
         lines.append(f"  {boss['hp']}/{boss['maxhp']} HP")
+    if game.merchant and game.merchant_adjacent():
+        lines.append("v: trade with merchant")
     for l in lines:
         draw.text((sx, sy), l, fill=RGB["text"], font=font)
         sy += 20
@@ -1274,6 +1555,12 @@ def _draw_frame(game):
     draw.text((sx, sy), "p potion  f eat  r scroll", fill=(139,148,158), font=font_small)
     sy += 12
     draw.text((sx, sy), "x search  c stats  S save", fill=(139,148,158), font=font_small)
+    sy += 14
+    draw.text((sx, sy), "! potion  $ gold  * food", fill=(139,148,158), font=font_small)
+    sy += 12
+    draw.text((sx, sy), "[ armor   / weapon = ring", fill=(139,148,158), font=font_small)
+    sy += 12
+    draw.text((sx, sy), "? scroll  w wand  k key", fill=(139,148,158), font=font_small)
 
     # inventory overlay
     if game.inventory_open:
@@ -1318,6 +1605,24 @@ def _draw_frame(game):
         draw.rectangle([bx-10, by+20, bx+tw+10, by+22], fill=RGB["title"])
         draw.text((bx, by), text, fill=RGB["title"], font=font_big)
 
+    # shop overlay
+    if game.shop_open:
+        bx = (img_w - 420)//2
+        by = (img_h - 320)//2
+        draw.rectangle([bx, by, bx+420, by+320], fill=RGB["panel"])
+        draw.rectangle([bx, by, bx+420, by+2], fill=RGB["gold"])
+        draw.text((bx+12, by+8), "MERCHANT", fill=RGB["gold"], font=font_big)
+        draw.text((bx+290, by+12), f"Gold: {game.player['gold']}", fill=RGB["gold"], font=font)
+        y = by + 42
+        for i, g in enumerate(SHOP_GOODS):
+            price = game.shop_price(g)
+            mark = ">" if i == game.shop_cursor else " "
+            afford = game.player["gold"] >= price
+            col = RGB["title"] if i == game.shop_cursor else (RGB["text"] if afford else (110,116,124))
+            draw.text((bx+12, y), f"{mark} {g['name'][:24]:<24} {price}g", fill=col, font=font)
+            y += 24
+        draw.text((bx+12, by+300), "Enter=buy   v/Esc=close", fill=(139,148,158), font=font_small)
+
     # game over overlay
     if game.game_over:
         draw.rectangle([0, 0, img_w, img_h], fill=(0,0,0))
@@ -1325,7 +1630,17 @@ def _draw_frame(game):
         col = RGB["hp"] if game.victory else RGB["trap"]
         draw.text((img_w//2-60, img_h//2-20), title, fill=col, font=font_big)
         draw.text((img_w//2-120, img_h//2+10), f"Floor {game.floor}  Level {game.player['level']}  Gold {game.player['gold']}", fill=RGB["text"], font=font)
-        draw.text((img_w//2-100, img_h//2+30), "Auto-restarts in auto mode" if game.auto else "Press r to retry, q to quit", fill=(139,148,158), font=font_small)
+        draw.text((img_w//2-100, img_h//2+34), "Auto-restarts in auto mode" if game.auto else "Press r to retry, q to quit", fill=(139,148,158), font=font_small)
+        scores = getattr(game, "_scores", None) or load_scores()
+        sy = img_h//2 + 70
+        draw.text((img_w//2-60, sy), "BEST RUNS", fill=RGB["title"], font=font)
+        sy += 22
+        for s in scores[:5]:
+            tag = "  WIN" if s.get("victory") else ""
+            line = f"{s.get('date','')}  floor {s.get('floor',0)}  lvl {s.get('level',0)}  gold {s.get('gold',0)}{tag}"
+            tw = draw.textlength(line, font=font_small)
+            draw.text((img_w//2 - tw/2, sy), line, fill=RGB["text"], font=font_small)
+            sy += 16
 
     return img
 
@@ -1498,7 +1813,7 @@ def main_kitty():
             last_action = time.time()
             while not game.game_over:
                 now = time.time()
-                if now - last_tick >= 0.5:
+                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
                     game.tick()
                     last_tick = now
                 game.draw()
@@ -1517,6 +1832,7 @@ def main_kitty():
                 elif game.auto and now - last_action >= 0.3:
                     game.auto_step()
                     last_action = now
+            game.record_score()
             game.draw()
             if game.auto:
                 time.sleep(2)
@@ -1555,7 +1871,7 @@ def main_sixel():
             last_action = time.time()
             while not game.game_over:
                 now = time.time()
-                if now - last_tick >= 0.5:
+                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
                     game.tick()
                     last_tick = now
                 game.draw()
@@ -1574,6 +1890,7 @@ def main_sixel():
                 elif game.auto and now - last_action >= 0.3:
                     game.auto_step()
                     last_action = now
+            game.record_score()
             game.draw()
             if game.auto:
                 time.sleep(2)
@@ -1612,6 +1929,7 @@ def title_screen(stdscr):
         "",
         "Move: arrows / WASD / hjkl   Diagonals: yubn",
         "p = potion   f = eat   r = scroll   i = inventory",
+        "v = trade (stand next to the merchant)",
         "c = stats   x = search   > = descend   S = save   L = load   A = auto   q = quit",
         "",
         "Reach floor 15 and slay what guards the exit.",
@@ -1626,21 +1944,30 @@ def title_screen(stdscr):
     stdscr.getch()
 
 def game_over_screen(stdscr, game):
+    scores = record_score(game)
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     title = "VICTORY!" if getattr(game, "victory", False) else "GAME OVER"
     color = Color.xp if getattr(game, "victory", False) else Color.hp
-    stdscr.addstr(h//2 - 2, max(0, w//2 - len(title)//2), title, curses.color_pair(color) | curses.A_BOLD)
+    stdscr.addstr(h//2 - 8, max(0, w//2 - len(title)//2), title, curses.color_pair(color) | curses.A_BOLD)
     stats = [
         "You escaped the depths!" if getattr(game, "victory", False) else "You died in the depths.",
         f"Floor reached: {game.floor}",
         f"Level: {game.player['level']}",
         f"Gold: {game.player['gold']}",
         "",
-        "Press r to retry, q to quit.",
+        "Best runs:",
     ]
-    for i, l in enumerate(stats):
-        stdscr.addstr(h//2 + i, max(0, w//2 - len(l)//2), l, cp("text"))
+    y = h//2 - 5
+    for l in stats:
+        stdscr.addstr(y, max(0, w//2 - len(l)//2), l, cp("text")); y += 1
+    for s in scores[:5]:
+        tag = "  WIN" if s.get("victory") else ""
+        l = f"{s.get('date','')}  floor {s.get('floor',0)}  lvl {s.get('level',0)}  gold {s.get('gold',0)}{tag}"
+        stdscr.addstr(y, max(0, w//2 - len(l)//2), l, cp("dim")); y += 1
+    y += 1
+    prompt = "Press r to retry, q to quit."
+    stdscr.addstr(y, max(0, w//2 - len(prompt)//2), prompt, cp("text"))
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -1666,7 +1993,7 @@ def main(stdscr):
         last_action = time.time()
         while not game.game_over:
             now = time.time()
-            if now - last_tick >= 0.5:
+            if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open:
                 game.tick()
                 last_tick = now
             game.draw()
