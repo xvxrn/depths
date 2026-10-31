@@ -15,19 +15,14 @@ There is no test framework. Verify headless (no TTY needed):
 ```python
 import random
 from depths import Game
-from depths import render, terminal
 
 random.seed(0)
-g = Game(mw=40, mh=25)          # full ruleset, no curses
+g = Game(mw=40, mh=25)          # full ruleset, no curses needed
 for _ in range(200):            # real-time simulation
     g.tick()
     if g.game_over:
         break
     g.auto_step()               # or g.move_player(dx, dy)
-
-# to exercise rendering:
-terminal._terminal_pixels_cache = (1280, 800)
-img = render._draw_frame(g)     # PIL Image; save and view it
 ```
 
 Then `python3 -m py_compile depths/*.py`. Run the real game with
@@ -36,12 +31,10 @@ Then `python3 -m py_compile depths/*.py`. Run the real game with
 ## Common tasks
 
 - **New enemy type**: add stats to `ENEMY_STATS` + name to `ENEMY_NAMES` +
-  spawn pool weight in `dungeon.place_entities` + colors to `RGB` and
-  `COLORS` (both dicts, same key) + a draw shape in `render._draw_frame`
-  enemy section + entry in the `ENEMY_COLOR` map in `game.draw_curses`.
-- **New item type**: char in `ITEM_CHARS`, pickup branch in
-  `Game.pickup`, glyph in `render.draw_item_glyph`, color in the
-  `item_colmap` maps (render + curses), legend line in the side panel.
+  spawn pool weight in `dungeon.place_entities` + colors to
+  `COLORS` + an entry in the `ENEMY_COLOR` map in `game.draw_curses`.
+- **New item type**: pickup branch in `Game.pickup`, a color entry in
+  `game.draw_curses` item map, legend line in the side panel.
 - **New boss**: entry in `BOSSES` (floors 5/10/15 are guarded) — stairs
   blocking is automatic via `Game.stairs_blocked`.
 - **Balance**: enemy scaling lives in `place_entities` (hp/atk floor
@@ -50,9 +43,8 @@ Then `python3 -m py_compile depths/*.py`. Run the real game with
 
 ## Pitfalls
 
-- Real-time `tick` runs in all three main loops and must pause for
+- Real-time `tick` runs in `app.main` and must pause for
   inventory/shop/help overlays — see "Gotchas" in AGENTS.md.
-- Enemy dicts get render-only `rx/ry` keys; pop them on floor change.
 - `Game.player` is serialized to JSON — keep `setdefault` on load for any
   new player field.
-- Kitty sender needs `C=1` and a trailing `\x1b[H` or the screen scrolls.
+- Use `app._put` for screens text; raw `addstr` crashes on small terminals.

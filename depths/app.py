@@ -1,126 +1,19 @@
-"""Main loops (kitty / sixel / curses), screens, entry point."""
-import curses, os, sys, time
-import select, tty, termios
+"""Curses main loop, screens, entry point."""
+import curses, sys, time
 
-from .constants import MAP_TILES_W, MAP_TILES_H, ename, cap
 from .game import Game
 from .scores import record_score
-from .terminal import Color, cp, init_colors, read_key, _safe_detect_sixel
+from .terminal import Color, cp, init_colors
 
 
-def main_kitty():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    tty.setcbreak(fd)
-    try:
-        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-        if "--auto" in sys.argv:
-            game.auto = True
-        while True:
-            game.game_over = False
-            last_tick = time.time()
-            last_action = time.time()
-            while not game.game_over:
-                now = time.time()
-                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
-                    game.tick()
-                    last_tick = now
-                game.draw()
-                r,_,_ = select.select([fd], [], [], 0.1)
-                if r:
-                    key = read_key(fd)
-                    if key == ord('A'):
-                        game.auto = not game.auto
-                        game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
-                        continue
-                    if key in (ord('q'), 27):
-                        return
-                    res = game.handle_input(key)
-                    if res == "quit":
-                        return
-                elif game.auto and now - last_action >= 0.3:
-                    game.auto_step()
-                    last_action = now
-            game.record_score()
-            game.draw()
-            if game.auto:
-                time.sleep(2)
-                game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-                game.auto = True
-                continue
-            # wait for r/q
-            while True:
-                rr,_,_ = select.select([fd], [], [], None)
-                if rr:
-                    k = read_key(fd)
-                    if k == ord('r'):
-                        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-                        game.auto = False
-                        break
-                    if k in (ord('q'), 27):
-                        return
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[?1049l\x1b[?25h")
-        sys.stdout.flush()
-
-
-def main_sixel():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    tty.setcbreak(fd)
-    try:
-        sys.stdout.write("\x1b[?1049h\x1b[?25l")
-        sys.stdout.flush()
-        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-        if "--auto" in sys.argv:
-            game.auto = True
-        while True:
-            game.game_over = False
-            last_tick = time.time()
-            last_action = time.time()
-            while not game.game_over:
-                now = time.time()
-                if now - last_tick >= 0.5 and not game.inventory_open and not game.shop_open and not game.help_open:
-                    game.tick()
-                    last_tick = now
-                game.draw()
-                r,_,_ = select.select([fd], [], [], 0.05)
-                if r:
-                    key = read_key(fd)
-                    if key == ord('A'):
-                        game.auto = not game.auto
-                        game.msg("Auto-pilot: " + ("ON" if game.auto else "OFF"))
-                        continue
-                    if key in (ord('q'), 27):
-                        return
-                    res = game.handle_input(key)
-                    if res == "quit":
-                        return
-                elif game.auto and now - last_action >= 0.3:
-                    game.auto_step()
-                    last_action = now
-            game.record_score()
-            game.draw()
-            if game.auto:
-                time.sleep(2)
-                game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-                game.auto = True
-                continue
-            while True:
-                rr,_,_ = select.select([fd], [], [], None)
-                if rr:
-                    k = read_key(fd)
-                    if k == ord('r'):
-                        game = Game(mw=MAP_TILES_W, mh=MAP_TILES_H)
-                        game.auto = False
-                        break
-                    if k in (ord('q'), 27):
-                        return
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[?1049l\x1b[?25h")
-        sys.stdout.flush()
+def _put(stdscr, y, x, text, attr):
+    """addstr that never raises on small terminals."""
+    h, w = stdscr.getmaxyx()
+    if 0 <= y < h and 0 <= x < w:
+        try:
+            stdscr.addnstr(y, x, text, max(0, w - x - 1), attr)
+        except curses.error:
+            pass
 
 
 def title_screen(stdscr):
@@ -134,14 +27,15 @@ def title_screen(stdscr):
         " |____/|_|   |_|   |_|  |_|____/  ",
     ]
     for i, l in enumerate(lines):
-        stdscr.addstr(h//2 - 9 + i, max(0, w//2 - len(l)//2), l, cp("title") | curses.A_BOLD)
+        _put(stdscr, h//2 - 9 + i, max(0, (w - len(l))//2), l, cp("title") | curses.A_BOLD)
     info = [
         "A roguelike. Procedural dungeons. Permadeath.",
         "",
         "Move: arrows / WASD / hjkl   Diagonals: yubn",
         "p = potion   f = eat   r = scroll   i = inventory",
         "v = trade (stand next to the merchant)",
-        "c = stats   x = search   > = descend   S = save   L = load   A = auto   ? = help   q = quit",
+        "c = stats   x = search   > = descend   S = save   L = load",
+        "A = auto   ? = help   q = quit",
         "",
         "Reach floor 15 and slay what guards the exit.",
         "Bosses on floors 5, 10, 15 block the stairs.",
@@ -150,7 +44,7 @@ def title_screen(stdscr):
         "Press any key to begin...",
     ]
     for i, l in enumerate(info):
-        stdscr.addstr(h//2 + i, max(0, w//2 - len(l)//2), l, cp("text"))
+        _put(stdscr, h//2 + i, max(0, (w - len(l))//2), l, cp("text"))
     stdscr.refresh()
     stdscr.getch()
 
@@ -173,14 +67,14 @@ def game_over_screen(stdscr, game):
     ]
     y = h//2 - 5
     for l in stats:
-        stdscr.addstr(y, max(0, w//2 - len(l)//2), l, cp("text")); y += 1
+        _put(stdscr, y, max(0, w//2 - len(l)//2), l, cp("text")); y += 1
     for s in scores[:5]:
         tag = "  WIN" if s.get("victory") else ""
         l = f"{s.get('date','')}  floor {s.get('floor',0)}  lvl {s.get('level',0)}  gold {s.get('gold',0)}{tag}"
-        stdscr.addstr(y, max(0, w//2 - len(l)//2), l, cp("dim")); y += 1
+        _put(stdscr, y, max(0, w//2 - len(l)//2), l, cp("dim")); y += 1
     y += 1
     prompt = "Press r to retry, q to quit."
-    stdscr.addstr(y, max(0, w//2 - len(prompt)//2), prompt, cp("text"))
+    _put(stdscr, y, max(0, w//2 - len(prompt)//2), prompt, cp("text"))
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -236,20 +130,6 @@ def main(stdscr):
 
 def run():
     try:
-        if os.environ.get("KITTY_WINDOW_ID"):
-            os.environ["DEPTHS_RENDER"] = "kitty"
-            main_kitty()
-        elif "--sixel" in sys.argv or (sys.stdin.isatty() and _safe_detect_sixel()):
-            os.environ["DEPTHS_RENDER"] = "sixel"
-            main_sixel()
-        else:
-            curses.wrapper(main)
+        curses.wrapper(main)
     except KeyboardInterrupt:
-        # clean exit
-        try:
-            sys.stdout.write("\x1b[?1049l\x1b[?25h")
-            sys.stdout.flush()
-        except Exception:
-            pass
         sys.exit(0)
-

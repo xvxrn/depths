@@ -1,7 +1,7 @@
 # AGENTS.md — depths
 
-A single-purpose terminal roguelike in Python. Pixel rendering via the Kitty
-graphics protocol, sixel fallback, plain curses fallback. Stdlib + Pillow only.
+A single-purpose terminal roguelike in Python. Pure stdlib: one curses
+renderer, one main loop, zero third-party dependencies.
 
 ## Run
 
@@ -23,9 +23,8 @@ or `--sixel`), curses fallback.
 | `depths/terminal.py`  | `init_colors`/`Color`/`cp`, pixel-size queries (`get_terminal_pixels`, CSI 14t), `read_key`, sixel detection |
 | `depths/dungeon.py`   | `make_dungeon` (rooms + corridors + secret/locked doors), `place_entities` (enemies, items, traps, stairs, boss, merchant), `biome` |
 | `depths/game.py`      | `Game` class: all rules. Movement, FOV (Bresenham), combat, enemy AI (`enemy_turn`/`enemy_act` + BFS), hunger/regen (`tick`), traps, pickups, shop, inventory, save/load, auto-pilot (`auto_step`), curses drawing |
-| `depths/render.py`    | `_draw_frame` (PIL, the whole pixel UI), `draw_item_glyph` (per-type item shapes), `render_kitty`/`render_sixel` senders, sixel encoder |
 | `depths/scores.py`    | Top-5 runs in `~/.depths_high.json` |
-| `depths/app.py`       | Three main loops (kitty/sixel/curses), title + game-over screens, `run()` entry |
+| `depths/app.py`       | The single curses main loop, title + game-over screens, `run()` entry |
 
 ## Conventions
 
@@ -46,13 +45,14 @@ or `--sixel`), curses fallback.
 
 ## Gotchas
 
-- Kitty image send uses `C=1` + `\x1b[H` — without it the full-screen image
-  scrolls the terminal one line per frame. Don't remove.
 - Real time (`tick`, 0.5 s) must be paused while any overlay is open:
   `not game.inventory_open and not game.shop_open and not game.help_open`
-  appears in all three main loops. Keep them in sync.
-- `get_terminal_pixels` reads terminal state via raw-mode queries and is
-  cached; in headless tests, stub `depths.terminal._terminal_pixels_cache`.
+  in the one main loop in `app.main`.
+- Never write raw `stdscr.addstr` in screens (title/game-over): use
+  `app._put`, which truncates and swallows `curses.error` on small
+  terminals — raw addstr on the last row/col crashes the game.
+- `draw_curses` is the only renderer; `Game.draw` is a no-op without a
+  stdscr (headless).
 - Save/highscore paths are module attributes so tests can redirect them:
   patch `depths.game.SAVE` and `depths.scores.HIGH`.
 
@@ -66,6 +66,7 @@ g.tick(); g.auto_step()  # simulate real time + auto-pilot
 ```
 
 `Game(mw=..., mh=...)` without `stdscr` runs the full ruleset headless.
-Drive it with `tick()` + `move_player()`/`auto_step()` loops; render frames
-with `depths.render._draw_frame(g)` after stubbing the pixel cache.
+Drive it with `tick()` + `move_player()`/`auto_step()` loops. For a real
+terminal check, run the game under a pty (set winsize before exec, see
+`/tmp/pty_smoke.py` pattern: fork, ioctl TIOCSWINSZ, exec, read/expect).
 Always `python3 -m py_compile depths/*.py` before committing.
