@@ -1,5 +1,5 @@
 """One main loop, two I/O backends: pixel (kitty/sixel) and curses cells."""
-import curses, os, select, sys, termios, time, tty
+import curses, os, random, select, sys, termios, time, tty
 
 from .constants import MAP_TILES_W, MAP_TILES_H
 from .game import Game
@@ -8,6 +8,51 @@ from .scores import record_score
 from .terminal import Color, cp, init_colors, read_key, _safe_detect_sixel
 
 OVERLAYS_OPEN = lambda game: game.inventory_open or game.shop_open or game.help_open
+
+
+def run_sim(n=200, max_ticks=40000):
+    """Headless auto-play balance harness: N runs, aggregate report to stdout."""
+    import statistics
+    from collections import Counter
+    rows = []
+    for i in range(n):
+        random.seed(10_000 + i)
+        g = Game(mw=40, mh=25)
+        g.auto = True
+        ticks = 0
+        while not g.game_over and ticks < max_ticks:
+            g.tick()
+            if g.game_over:
+                break
+            g.auto_step()
+            ticks += 1
+        rows.append({"floor": g.floor, "level": g.player["level"],
+                     "gold": g.player["gold"], "killer": g.killer,
+                     "victory": g.victory, "ticks": ticks, "kills": g.kills})
+        if (i + 1) % 50 == 0:
+            print(f"  {i+1}/{n} runs done", file=sys.stderr)
+
+    wins = sum(r["victory"] for r in rows)
+    floors = sorted(r["floor"] for r in rows)
+    hist = Counter(r["floor"] for r in rows)
+    killers = Counter(r["killer"] or ("escaped" if r["victory"] else "max ticks")
+                      for r in rows)
+    print(f"\nSIM: {n} runs")
+    print(f"wins: {wins} ({100*wins/n:.1f}%)")
+    print(f"death floor: median {statistics.median(floors)}  "
+          f"mean {statistics.mean(floors):.1f}  p90 {floors[int(len(floors)*0.9)]}  max {max(floors)}")
+    peak = max(hist.values())
+    print("floor histogram:")
+    for fl in sorted(hist):
+        bar = "#" * max(1, int(40 * hist[fl] / peak))
+        print(f"  {fl:2}: {hist[fl]:3} {bar}")
+    print("killers (top):")
+    for k, cnt in killers.most_common(8):
+        print(f"  {k}: {100*cnt/n:.0f}%")
+    print(f"avg level {statistics.mean(r['level'] for r in rows):.1f}  "
+          f"avg gold {statistics.mean(r['gold'] for r in rows):.0f}  "
+          f"avg kills {statistics.mean(r['kills'] for r in rows):.1f}  "
+          f"avg ticks {statistics.mean(r['ticks'] for r in rows):.0f}")
 
 
 def _put(stdscr, y, x, text, attr):
@@ -198,6 +243,12 @@ def play(backend):
 
 def run():
     try:
+        if "--sim" in sys.argv:
+            n = 200
+            if len(sys.argv) > sys.argv.index("--sim") + 1:
+                n = int(sys.argv[sys.argv.index("--sim") + 1])
+            run_sim(n)
+            return
         if os.environ.get("KITTY_WINDOW_ID"):
             os.environ["DEPTHS_RENDER"] = "kitty"
             play(PixelBackend(render_kitty))

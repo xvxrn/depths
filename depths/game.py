@@ -23,7 +23,7 @@ class Game:
     def reset(self):
         self.floor = 1
         self.player = {"x":0,"y":0,"hp":24,"maxhp":24,"atk":4,"def":1,"xp":0,"level":1,
-                       "gold":0,"potions":1,"scrolls":0,"food":3,"hunger":0,
+                       "gold":0,"potions":2,"scrolls":0,"food":3,"hunger":0,
                        "weapon":None,"armor":None,"ring":None,"inventory":[],"keys":0}
         self.messages = []
         self.explored = set()
@@ -45,6 +45,7 @@ class Game:
         self._draw_t = 0.0
         self.hints_shown = set()
         self.killer = None       # what finished the run, for the death recap
+        self.kills = 0
         self.help_open = False
         self.new_floor()
         self.hint("move", "Arrows/WASD to move. Press ? for help.")
@@ -192,7 +193,7 @@ class Game:
         # real-time enemy turn + hunger + regen
         self.tick_count += 1
         p = self.player
-        p["hunger"] = min(120, p["hunger"] + 0.2)
+        p["hunger"] = min(120, p["hunger"] + 0.05)
         if p["hunger"] >= 80:
             self.starve_acc += 1
             if self.starve_acc >= 25:  # ~12s of real time per starvation point
@@ -250,6 +251,7 @@ class Game:
                 self.msg("The way to the stairs is clear.", "sys")
                 self.set_banner(f"{cap(ename(e))} is slain!", 3.0)
             self.player["xp"] += e.get("xp", 3)
+            self.kills += 1
             if random.random() < 0.4:
                 amt = random.randint(1, 6) + self.floor
                 self.player["gold"] += amt
@@ -424,9 +426,9 @@ class Game:
         if self.player["food"] <= 0:
             self.msg("No food."); return
         self.player["food"] -= 1
-        self.player["hunger"] = max(0, self.player["hunger"]-40)
+        self.player["hunger"] = max(0, self.player["hunger"]-60)
         self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+5)
-        self.msg("You eat. Hunger -40, +5 HP.")
+        self.msg("You eat. Hunger -60, +5 HP.")
         self.compute_fov()
 
     def use_scroll(self):
@@ -463,6 +465,7 @@ class Game:
                         self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
                         self.msg(f"{cap(ename(e))} dies!", "sys")
                         self.player["xp"] += e.get("xp", 3)
+                        self.kills += 1
                         self.check_level()
         elif effect == "teleport":
             tiles = [(x,y) for y in range(self.mh) for x in range(self.mw) if self.grid[y][x] in (1,2,3) and not any(e["x"]==x and e["y"]==y and e["hp"]>0 for e in self.entities)]
@@ -489,7 +492,7 @@ class Game:
                         e["hp"]=0
                         self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
                         self.msg(f"{cap(ename(e))} dies!", "sys")
-                        self.player["xp"] += e.get("xp",3); self.check_level()
+                        self.player["xp"] += e.get("xp",3); self.kills += 1; self.check_level()
         self.msg(f"The wand zaps {cnt} enemies.")
         self.player["inventory"] = [i for i in self.player["inventory"] if i is not inv_item]
         self.compute_fov()
@@ -689,6 +692,7 @@ class Game:
                 return
             self.floor += 1
             self.msg(f"You descend to floor {self.floor}.", "sys")
+            self.player["hunger"] = max(0, self.player["hunger"] - 10)
             self.new_floor()
 
     def load_game(self):
@@ -790,6 +794,25 @@ class Game:
             if e["hp"] > 0 and abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]) == 1:
                 self.move_player(e["x"]-self.player["x"], e["y"]-self.player["y"])
                 return
+        # seek the merchant only when we'd actually buy something
+        p = self.player
+        if self.merchant:
+            food_i = next(i for i, gd in enumerate(SHOP_GOODS) if gd["ch"] == "*")
+            pot_i = next(i for i, gd in enumerate(SHOP_GOODS) if gd["ch"] == "!")
+            want_food = p["hunger"] > 60 and p["gold"] >= self.shop_price(SHOP_GOODS[food_i])
+            want_pot = p["potions"] == 0 and p["hunger"] > 40 \
+                and p["gold"] >= self.shop_price(SHOP_GOODS[pot_i]) + 10
+            if want_food or want_pot:
+                target_m = (self.merchant["x"], self.merchant["y"])
+                if (p["x"], p["y"]) == target_m:
+                    if want_food:
+                        self.shop_cursor = food_i; self.shop_buy(); return
+                    if want_pot:
+                        self.shop_cursor = pot_i; self.shop_buy(); return
+                step = self.bfs_next((p["x"], p["y"]), target_m)
+                if step:
+                    self.move_player(step[0]-p["x"], step[1]-p["y"])
+                    return
         # choose target
         target = None
         boss = self.stairs_blocked()

@@ -68,14 +68,15 @@ def place_entities(grid, width, height, floor, player_pos, rooms=None):
                     cands.append((x, y))
     random.shuffle(cands)
     pool = ["g","g","g","r","r","o","s","b"]
-    if floor >= 2: pool += ["o","o","a","s","W"]
-    if floor >= 3: pool += ["T","n","V"]
+    if floor >= 2: pool += ["o","o","a","s"]
+    if floor >= 3: pool += ["T","n","V","W"]
     if floor >= 4: pool += ["T","m","G"]
-    if floor >= 5: pool += ["D","n","m"]
+    if floor >= 5: pool += ["G","n","m","W"]
+    if floor >= 7: pool += ["D"]
     if floor % 5 == 0:
         pool = ["o","s","T","W","n","m"]  # boss floors: fewer heavies, the boss is the challenge
     idx = 0
-    n_enemies = 4 + floor*2 + random.randint(0, 3)
+    n_enemies = 3 + floor*2 + random.randint(0, 3)
     for _ in range(n_enemies):
         if idx >= len(cands): break
         x, y = cands[idx]; idx += 1
@@ -100,7 +101,7 @@ def place_entities(grid, width, height, floor, player_pos, rooms=None):
                             "atk": ENEMY_STATS["m"][1], "name": "m", "xp": ENEMY_STATS["m"][2],
                             "disguise": random.choice(["!","/","[","$","?","*"])})
             continue
-        ch = random.choice(["!","!","*","*","/","[","$","?","?","=","w"])
+        ch = random.choice(["!","!","*","*","*","*","/","[","$","?","?","=","w"])
         items.append({"ch": ch, "x": x, "y": y})
     n_traps = random.randint(1, 3) + floor//3
     for _ in range(n_traps):
