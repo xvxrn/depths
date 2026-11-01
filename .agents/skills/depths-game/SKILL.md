@@ -41,9 +41,13 @@ Then `python3 -m py_compile depths/*.py`. Run the real game with
   `game.draw_curses` item map, legend line in the side panel.
 - **New boss**: entry in `BOSSES` (floors 5/10/15 are guarded) — stairs
   blocking is automatic via `Game.stairs_blocked`.
-- **Balance**: enemy scaling lives in `place_entities` (hp/atk floor
-  multipliers), player progression in `Game.check_level`, hunger/regen in
-  `Game.tick`.
+- **Balance**: measure first — `python3 -m depths --sim 200` prints
+  win rate / death floors / killers for headless auto-games. Knobs:
+  enemy pools+scaling in `place_entities`, hunger/regen in `Game.tick`
+  (hunger is per player action), boss stats in `BOSSES`.
+- **Affixes/rarity**: tables in `constants.py` (`WEAPON_AFFIXES`,
+  `ARMOR_AFFIXES`, `RARITIES`), rolled by `roll_item`, hooked in
+  `Game.attack` (crit/lifesteal) and `enemy_act` melee (thorns).
 
 ## Pitfalls
 

@@ -20,12 +20,12 @@ or `--sixel`), curses fallback.
 
 | File                  | Contents |
 |-----------------------|----------|
-| `depths/constants.py` | Tile/enemy/item chars, `RGB` (true-color), `COLORS` (256-color), `ENEMY_STATS`, `ENEMY_NAMES`, `BOSSES`, `SHOP_GOODS`, map geometry (`MAP_TILES_W/H`, `SIDE_W`, `PAD`) |
+| `depths/constants.py` | Tile/enemy/item chars, `RGB` (true-color), `COLORS` (256-color), `ENEMY_STATS`, `ENEMY_NAMES`, `BOSSES`, `SHOP_GOODS`, rarity tables + `roll_item`, map geometry (`MAP_TILES_W/H`, `SIDE_W`, `PAD`) |
 | `depths/terminal.py`  | `init_colors`/`Color`/`cp`, pixel-size queries (`get_terminal_pixels`, CSI 14t), `read_key`, sixel detection |
 | `depths/dungeon.py`   | `make_dungeon` (rooms + corridors + secret/locked doors), `place_entities` (enemies, items, traps, stairs, boss, merchant), `biome` |
 | `depths/game.py`      | `Game` class: all rules. Movement, FOV (Bresenham), combat, enemy AI (`enemy_turn`/`enemy_act` + BFS), hunger/regen (`tick`), traps, pickups, shop, inventory, save/load, auto-pilot (`auto_step`), curses drawing |
 | `depths/scores.py`    | Top-5 runs in `~/.depths_high.json` |
-| `depths/app.py`       | `play()` — the single main loop; `CursesBackend`/`PixelBackend` (input + draw + game-over presentation); title + game-over screens; `run()` picks a backend |
+| `depths/app.py`       | `play()` — the single main loop; `CursesBackend`/`PixelBackend` (input + draw + game-over presentation); `run_sim` balance harness (`--sim N`); title + game-over screens; `run()` picks a backend |
 
 ## Conventions
 
@@ -41,6 +41,11 @@ or `--sixel`), curses fallback.
   (`Game.stairs_blocked`).
 - Items on the floor are dicts `{"ch": "!"/"*"/...}`; `draw_item_glyph` has a
   shape per type — add both or neither.
+- Weapon/armor drops roll affixes via `roll_item` (lifesteal/crit/thorns);
+  combat hooks live in `Game.attack` (crit, lifesteal) and the melee branch
+  of `enemy_act` (thorns).
+- Boss specials key off `e["ch"]` inside `enemy_act` (summon/quake/frost
+  bolt) and `Game.attack` (blink).
 - The `Game.player` dict is saved to JSON verbatim: keep new player fields
   backward-compatible (`setdefault` on load).
 
@@ -59,6 +64,13 @@ or `--sixel`), curses fallback.
 - Save/highscore paths are module attributes so tests can redirect them:
   patch `depths.game.SAVE` and `depths.scores.HIGH`; pixel-size cache is
   stubbed via `depths.terminal._terminal_pixels_cache`.
+
+## Balance
+
+`python3 -m depths --sim 200` runs 200 headless auto-games and prints
+win rate, death-floor histogram and killer distribution. Tune knobs
+(enemy pools/scaling in `dungeon.place_entities`, hunger/regen in
+`Game.tick`, boss stats in `BOSSES`), then re-run — don't guess.
 
 ## Testing (headless, no TTY)
 

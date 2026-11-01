@@ -10,7 +10,7 @@ from .terminal import Color, cp, init_colors, read_key, _safe_detect_sixel
 OVERLAYS_OPEN = lambda game: game.inventory_open or game.shop_open or game.help_open
 
 
-def run_sim(n=200, max_ticks=40000):
+def run_sim(n=200, max_ticks=15000):
     """Headless auto-play balance harness: N runs, aggregate report to stdout."""
     import statistics
     from collections import Counter

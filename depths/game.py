@@ -169,6 +169,7 @@ class Game:
         for e in self.entities:
             if e["hp"]>0 and e["x"]==nx and e["y"]==ny:
                 self.attack(e)
+                self.player["_moved"] = True
                 self.compute_fov()
                 return
         for it in self.items:
@@ -181,6 +182,7 @@ class Game:
         if self.grid[ny][nx] == 3:
             self.msg("You stand on the stairs. Press > to descend.", "sys")
         self.player["x"], self.player["y"] = nx, ny
+        self.player["_moved"] = True
         if self.merchant_adjacent():
             self.hint("trade", "Press v to trade with the merchant.")
         self.reveal_secrets()
@@ -193,7 +195,9 @@ class Game:
         # real-time enemy turn + hunger + regen
         self.tick_count += 1
         p = self.player
-        p["hunger"] = min(120, p["hunger"] + 0.05)
+        if p.get("_moved"):            # hunger accrues per action, not wall-clock
+            p["hunger"] = min(120, p["hunger"] + 0.08)
+            p["_moved"] = False
         if p["hunger"] >= 80:
             self.starve_acc += 1
             if self.starve_acc >= 25:  # ~12s of real time per starvation point
@@ -493,8 +497,8 @@ class Game:
             self.msg("No food."); return
         self.player["food"] -= 1
         self.player["hunger"] = max(0, self.player["hunger"]-60)
-        self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+5)
-        self.msg("You eat. Hunger -60, +5 HP.")
+        self.player["hp"] = min(self.player["maxhp"], self.player["hp"]+8)
+        self.msg("You eat. Hunger -60, +8 HP.")
         self.compute_fov()
 
     def use_scroll(self):
@@ -853,7 +857,7 @@ class Game:
         # heal
         if self.player["hp"] < self.player["maxhp"] * 0.35 and self.player["potions"] > 0:
             self.use_potion(); return
-        if self.player["hunger"] > 55 and self.player["food"] > 0:
+        if self.player["hunger"] > 45 and self.player["food"] > 0:
             self.eat_food(); return
         # equip upgrades from inventory
         for i, it in enumerate(self.player["inventory"]):
@@ -875,7 +879,8 @@ class Game:
         if self.merchant:
             food_i = next(i for i, gd in enumerate(SHOP_GOODS) if gd["ch"] == "*")
             pot_i = next(i for i, gd in enumerate(SHOP_GOODS) if gd["ch"] == "!")
-            want_food = p["hunger"] > 60 and p["gold"] >= self.shop_price(SHOP_GOODS[food_i])
+            want_food = (p["hunger"] > 60 or p["food"] < 2) \
+                and p["gold"] >= self.shop_price(SHOP_GOODS[food_i])
             want_pot = p["potions"] == 0 and p["hunger"] > 40 \
                 and p["gold"] >= self.shop_price(SHOP_GOODS[pot_i]) + 10
             if want_food or want_pot:
