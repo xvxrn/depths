@@ -148,6 +148,8 @@ def place_entities(grid, width, height, floor, player_pos, rooms=None):
             entities.append({"ch": boss["ch"], "x": spot[0], "y": spot[1],
                              "hp": boss["hp"], "maxhp": boss["hp"], "atk": boss["atk"],
                              "name": boss["name"], "xp": boss["xp"], "boss": True})
+        if boss["ch"] == "Z":
+            entities[-1]["slow"] = True
     # merchant in a room away from the player's start
     merchant = None
     if floor >= 2 and rooms and len(rooms) > 1:

@@ -2,7 +2,7 @@
 import curses, json, math, os, random, time
 from collections import deque
 
-from .constants import BOSSES, PLAYER, SHOP_GOODS, SAVE, ename, cap, roll_item, RARITY_256
+from .constants import BOSSES, ENEMY_STATS, PLAYER, SHOP_GOODS, SAVE, ename, cap, roll_item, RARITY_256
 from .dungeon import biome, make_dungeon, place_entities
 from .terminal import Color, cp
 from .render import render_kitty, render_sixel
@@ -249,6 +249,14 @@ class Game:
             self.player["hp"] = min(self.player["maxhp"], self.player["hp"] + ls)
         self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7,
                     color=(255,90,70) if crit else (255,255,255))
+        if e.get("boss") and e["ch"] == "L" and e["hp"] > 0 and random.random() < 0.4:
+            pp = self.player
+            spots = [(x, y) for y in range(self.mh) for x in range(self.mw)
+                     if self.grid[y][x] == 1 and 2 <= abs(x-pp["x"]) + abs(y-pp["y"]) <= 6
+                     and not any(o["x"] == x and o["y"] == y and o["hp"] > 0 for o in self.entities)]
+            if spots:
+                e["x"], e["y"] = random.choice(spots)
+                self.msg("The Lich blinks away!", "danger")
         if e["hp"] <= 0:
             e["hp"] = 0
             self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
@@ -285,6 +293,16 @@ class Game:
         if sees and dist <= 8:
             e["alert"] = True
         if dist == 1:
+            if e["ch"] == "Z" and random.random() < 0.3:
+                dmg = max(1, e["atk"] + 2 - self.total_def() // 2)
+                self.killer = ename(e)
+                p["hp"] -= dmg
+                self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(226,232,240))
+                self.flash_until = time.time() + 0.25
+                self.msg(f"The Bone Colossus quakes the ground for {dmg}!", "danger")
+                if p["hp"] <= 0:
+                    p["hp"] = 0; self.game_over = True
+                return
             dmg = max(1, e["atk"] - self.total_def() + random.randint(-1, 1))
             if random.random() < 0.05:
                 dmg = int(dmg * 1.7)
@@ -328,6 +346,34 @@ class Game:
                     p["hp"] = 0; self.game_over = True
                     self.msg(f"You were shot by {ename(e)}.", "danger")
             return
+        if e.get("boss"):
+            if e["ch"] == "L" and sees and 2 <= dist <= 6 and random.random() < 0.35:
+                dmg = max(1, e["atk"] - self.total_def() // 2 + random.randint(0, 2))
+                self.add_fx("proj", x0=ex, y0=ey, x1=px, y1=py, life=0.22, color=(168,85,247))
+                self.killer = ename(e)
+                p["hp"] -= dmg
+                self.add_fx("dmg", x=px, y=py, txt=str(dmg), life=0.7, color=(168,85,247))
+                self.flash_until = time.time() + 0.25
+                self.msg(f"{cap(ename(e))} blasts you with frost for {dmg}.", "danger")
+                if p["hp"] <= 0:
+                    p["hp"] = 0; self.game_over = True
+                return
+            if e["ch"] == "B" and e["hp"] <= e["maxhp"] * 0.5 and not e.get("called"):
+                e["called"] = True
+                ghp = int(ENEMY_STATS["g"][0] * (1 + 0.12 * (self.floor - 1)))
+                gatk = int(ENEMY_STATS["g"][1] * (1 + 0.08 * (self.floor - 1)))
+                summoned = 0
+                for dx, dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)):
+                    nx, ny = ex+dx, ey+dy
+                    if 0 <= nx < self.mw and 0 <= ny < self.mh and self.grid[ny][nx] == 1 \
+                            and not any(o["x"] == nx and o["y"] == ny and o["hp"] > 0 for o in self.entities):
+                        self.entities.append({"ch": "g", "x": nx, "y": ny, "hp": ghp, "maxhp": ghp,
+                                              "atk": gatk, "name": "g", "xp": 3})
+                        summoned += 1
+                        if summoned >= 2:
+                            break
+                if summoned:
+                    self.msg(f"{cap(ename(e))} calls his guard!", "danger")
         if e["ch"] == "n" and sees and random.random() < 0.25:
             for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
                 nx, ny = ex+dx, ey+dy
