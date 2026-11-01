@@ -1,7 +1,7 @@
 """Pixel rendering: PIL frame drawing, Kitty graphics protocol, sixel."""
 import base64, io, math, os, re, select, shutil, sys, time
 
-from .constants import RGB, MAP_TILES_W, MAP_TILES_H, SIDE_W, PAD, SHOP_GOODS, ename, cap
+from .constants import RGB, MAP_TILES_W, MAP_TILES_H, SIDE_W, PAD, SHOP_GOODS, ename, cap, RARITY_TEXT
 from .dungeon import biome
 from .scores import load_scores
 from .terminal import get_terminal_pixels
@@ -339,8 +339,11 @@ def _draw_frame(game):
         for i, it in enumerate(game.player["inventory"][:12]):
             mark = ">" if i == game.inv_cursor else " "
             d = game.item_delta(it)
+            rar = it["item"].get("rarity") if it.get("kind") == "equip" else None
             if i == game.inv_cursor:
                 col = RGB["title"]
+            elif rar and rar != "common":
+                col = RARITY_TEXT[rar]
             elif d is not None and d > 0:
                 col = RGB["player"]
             elif d is not None and d < 0:
@@ -386,7 +389,13 @@ def _draw_frame(game):
             y += 16
         for i, it in enumerate(inv[:14]):
             mark = ">" if i == game.inv_cursor else " "
-            col = RGB["title"] if i == game.inv_cursor else RGB["text"]
+            rar = it["item"].get("rarity") if it.get("kind") == "equip" else None
+            if i == game.inv_cursor:
+                col = RGB["title"]
+            elif rar and rar != "common":
+                col = RARITY_TEXT[rar]
+            else:
+                col = RGB["text"]
             draw.text((bx+12, y), f"{mark} {it['name'][:34]}", fill=col, font=font_small)
             y += 14
         if not inv:

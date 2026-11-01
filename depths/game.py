@@ -2,7 +2,7 @@
 import curses, json, math, os, random, time
 from collections import deque
 
-from .constants import BOSSES, PLAYER, SHOP_GOODS, SAVE, ename, cap
+from .constants import BOSSES, PLAYER, SHOP_GOODS, SAVE, ename, cap, roll_item, RARITY_256
 from .dungeon import biome, make_dungeon, place_entities
 from .terminal import Color, cp
 from .render import render_kitty, render_sixel
@@ -235,12 +235,18 @@ class Game:
     def attack(self, e):
         patk = self.total_atk()
         dmg = max(1, patk - 1 + random.randint(-1, 2))
-        crit = random.random() < 0.1
+        crit_c = 0.1
+        if self.player["weapon"]:
+            crit_c += self.player["weapon"].get("crit", 0) / 100
+        crit = random.random() < crit_c
         if crit:
             dmg = int(dmg * 1.8)
-            self.msg("Critical hit!")
+            self.msg("Critical hit!", "sys")
         e["hp"] -= dmg
         self.msg(f"You hit {ename(e)} for {dmg}.")
+        ls = self.player["weapon"].get("lifesteal", 0) if self.player["weapon"] else 0
+        if ls and self.player["hp"] < self.player["maxhp"]:
+            self.player["hp"] = min(self.player["maxhp"], self.player["hp"] + ls)
         self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(dmg), life=0.7,
                     color=(255,90,70) if crit else (255,255,255))
         if e["hp"] <= 0:
@@ -287,6 +293,19 @@ class Game:
                 self.msg(f"{cap(ename(e))} hits you for {dmg}.", "danger")
             if e["ch"] == "V":
                 e["hp"] = min(e["maxhp"], e["hp"] + dmg//2)
+            th = self.player["armor"].get("thorns", 0) if self.player["armor"] else 0
+            if th and e["hp"] > 0:
+                e["hp"] -= th
+                self.add_fx("dmg", x=e["x"], y=e["y"], txt=str(th), life=0.6, color=(150,150,150))
+                if e["hp"] <= 0:
+                    e["hp"] = 0
+                    self.add_fx("poof", x=e["x"], y=e["y"], life=0.5)
+                    self.msg(f"Thorns kill {ename(e)}!", "sys")
+                    self.player["xp"] += e.get("xp", 3)
+                    self.kills += 1
+                    self.check_level()
+                else:
+                    self.msg(f"Thorns wound {ename(e)} for {th}.", "info")
             self.killer = ename(e)
             p["hp"] -= dmg
             self.flash_until = time.time() + 0.25
@@ -386,14 +405,15 @@ class Game:
             self.msg("You pick up food.", "loot")
             self.hint("eat", "Press f to eat when hungry.")
         elif ch == "/":
-            wname = f"weapon (+{2+self.floor//3} ATK)"
-            self.player["inventory"].append({"ch":"/","name":wname,"item":{"type":"weapon","atk":2+self.floor//3,"name":wname},"kind":"equip"})
-            self.msg("You find a weapon. (i to equip)", "loot")
+            item = roll_item("weapon", self.floor)
+            self.player["inventory"].append({"ch":"/","name":item["name"],"item":item,"kind":"equip"})
+            self.msg(f"You find {item['name']}. (i to equip)", "loot")
             self.hint("equip", "Press i to open inventory and equip.")
         elif ch == "[":
-            aname = f"armor (+{1+self.floor//4} DEF)"
-            self.player["inventory"].append({"ch":"[","name":aname,"item":{"type":"armor","def":1+self.floor//4,"hp":2+self.floor//2,"name":aname},"kind":"equip"})
-            self.msg("You find armor.", "loot")
+            item = roll_item("armor", self.floor)
+            self.player["inventory"].append({"ch":"[","name":item["name"],"item":item,"kind":"equip"})
+            self.msg(f"You find {item['name']}.", "loot")
+            self.hint("equip", "Press i to open inventory and equip.")
         elif ch == "$":
             amt = random.randint(5, 20) + self.floor*2
             self.player["gold"] += amt
@@ -789,6 +809,16 @@ class Game:
             self.use_potion(); return
         if self.player["hunger"] > 55 and self.player["food"] > 0:
             self.eat_food(); return
+        # equip upgrades from inventory
+        for i, it in enumerate(self.player["inventory"]):
+            if it["kind"] == "equip":
+                d = self.item_delta(it)
+                if d is not None and d > 0:
+                    self.inv_cursor = i
+                    self.inventory_open = True
+                    self.inventory_action(10)
+                    self.inventory_action(ord('i'))
+                    return
         # adjacent enemy -> attack
         for e in self.entities:
             if e["hp"] > 0 and abs(e["x"]-self.player["x"]) + abs(e["y"]-self.player["y"]) == 1:
@@ -1016,8 +1046,11 @@ class Game:
             if y >= sy+box_h-2: break
             mark = ">" if i == self.inv_cursor else " "
             d = self.item_delta(it)
+            rar = it["item"].get("rarity") if it.get("kind") == "equip" else None
             if i == self.inv_cursor:
                 attr = cp("equip")
+            elif rar and rar != "common":
+                attr = cp(RARITY_256[rar])
             elif d is not None and d > 0:
                 attr = cp("player")
             elif d is not None and d < 0:

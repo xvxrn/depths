@@ -1,5 +1,5 @@
 """depths — shared constants and small helpers."""
-import os
+import os, random
 
 SAVE = os.path.expanduser("~/.depths_save.json")
 
@@ -86,3 +86,59 @@ SIDE_W = 290
 
 PAD = 10
 
+
+
+# ---------- item rarity ----------
+RARITIES = [("common", 0.60, ""), ("uncommon", 0.25, "keen"),
+            ("rare", 0.12, "vorpal"), ("epic", 0.03, "demonic")]
+RARITY_TEXT = {"common": (201,209,217), "uncommon": (63,185,80),
+               "rare": (88,166,255), "epic": (230,110,255)}
+RARITY_256 = {"common": "text", "uncommon": "player", "rare": "title", "epic": "potion"}
+WEAPON_AFFIXES = [
+    {"key": "atk", "lo": 1, "hi": 2},
+    {"key": "lifesteal", "lo": 1, "hi": 2},
+    {"key": "crit", "lo": 5, "hi": 12},
+]
+ARMOR_AFFIXES = [
+    {"key": "def", "lo": 1, "hi": 2},
+    {"key": "hp", "lo": 3, "hi": 6},
+    {"key": "thorns", "lo": 1, "hi": 3},
+]
+
+def roll_item(kind, floor):
+    """Random weapon/armor with rolled affixes. kind: 'weapon' | 'armor'."""
+    r, acc = random.random(), 0.0
+    rarity, prefix = "common", ""
+    for name, w, pref in RARITIES:
+        acc += w
+        if r < acc:
+            rarity, prefix = name, pref
+            break
+    table = WEAPON_AFFIXES if kind == "weapon" else ARMOR_AFFIXES
+    n_affix = {"common": 0, "uncommon": 1, "rare": 2, "epic": 2}[rarity]
+    item = {"type": kind, "name": "", "rarity": rarity}
+    if kind == "weapon":
+        item["atk"] = 2 + floor // 3
+    else:
+        item["def"] = 1 + floor // 4
+        item["hp"] = 2 + floor // 2
+    labels = []
+    for a in random.sample(table, n_affix):
+        span = a["hi"] - a["lo"]
+        if rarity == "epic":
+            val = a["hi"]
+        elif rarity == "rare":
+            val = a["lo"] + max(1, int(span * 0.7)) if span else a["hi"]
+        else:
+            val = a["lo"]
+        item[a["key"]] = item.get(a["key"], 0) + val
+        if a["key"] == "crit":
+            labels.append(f"+{val}% crit")
+        elif a["key"] in ("lifesteal", "thorns"):
+            labels.append(f"{val} {a['key']}")
+        else:
+            labels.append(f"+{val} {a['key'].upper()}")
+    stat = f"+{item['atk']} ATK" if kind == "weapon" else f"+{item['def']} DEF"
+    item["name"] = (f"{prefix}{' ' if prefix else ''}{kind} ({stat}"
+                    + (", " + ", ".join(labels) if labels else "") + ")")
+    return item
